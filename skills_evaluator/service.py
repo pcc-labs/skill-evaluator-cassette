@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from .pipeline import MAX_TRANSCRIPT_CHARS, RULESET_VERSION, JudgeFinding
+from .store import RevisionRecord, RevisionStore, new_revision_id, utcnow
 from .tapes import SearchHit, SearchUnavailableError, TapesClient
 from .wire import (
     MAX_REASON_CHARS,
@@ -24,6 +25,12 @@ from .wire import (
     normalize_findings,
     normalize_score,
 )
+
+
+class NoEvidenceError(Exception):
+    """A revision was requested but no session evidence exists to ground
+    it. Rewriting a skill from nothing would be exactly the ungrounded
+    guessing this cassette exists to prevent."""
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +59,62 @@ class EvaluationService:
     tapes: TapesClient
     module: object
     config: ServiceConfig = field(default_factory=ServiceConfig)
+    # reviser is any callable with SkillReviser's forward signature; store
+    # is where proposed revisions and their accept/reject labels accumulate.
+    # Both are optional so an evaluate-only deployment stays minimal.
+    reviser: object | None = None
+    store: RevisionStore | None = None
 
     def evaluate(self, request: EvaluateRequest) -> EvaluateResponse:
+        response, _ = self._evaluate_full(request)
+        return response
+
+    def revise(self, request: EvaluateRequest) -> RevisionRecord:
+        """Evaluates the skill, proposes an evidence-grounded revision, and
+        stores it as ``proposed`` — the unit the status hook later labels."""
+        if self.reviser is None or self.store is None:
+            raise RuntimeError("revision pipeline is not configured")
+
+        response, transcripts = self._evaluate_full(request)
+        if not transcripts:
+            raise NoEvidenceError(
+                "no session evidence relates to this skill; "
+                "refusing to propose an ungrounded revision"
+            )
+
+        evidence = "\n---\n".join(text for _, text in transcripts)
+        proposal = self.reviser(
+            skill_name=request.skill.name,
+            skill_markdown=request.candidate.skill_md,
+            findings=[
+                JudgeFinding(
+                    rule_id=f.rule_id,
+                    severity=f.severity,  # type: ignore[arg-type]
+                    message=f.message,
+                    file=f.file,
+                    line=f.line,
+                )
+                for f in response.findings
+            ],
+            session_evidence=evidence,
+        )
+
+        record = RevisionRecord(
+            id=new_revision_id(),
+            skill_id=request.skill_id,
+            ref=request.ref.model_dump() if request.ref else None,
+            skill_name=request.skill.name,
+            original_skill_md=request.candidate.skill_md,
+            revised_skill_md=str(proposal.revised_markdown or "").strip(),
+            rationale=str(proposal.rationale or "").strip()[:MAX_REASON_CHARS * 2],
+            evaluation=response.model_dump(),
+            created_at=utcnow(),
+        )
+        return self.store.insert(record)
+
+    def _evaluate_full(
+        self, request: EvaluateRequest
+    ) -> tuple[EvaluateResponse, list[tuple[str, str]]]:
         provenance_ids = self._resolve_skill(request)
 
         hits, search_note = self._gather_hits(request)
@@ -77,7 +138,10 @@ class EvaluationService:
         )
 
         if not transcripts:
-            return self._finish(request, self._no_evidence_response(metrics, search_note))
+            return (
+                self._finish(request, self._no_evidence_response(metrics, search_note)),
+                transcripts,
+            )
 
         prediction = self.module(
             skill_name=request.skill.name,
@@ -103,7 +167,7 @@ class EvaluationService:
         )
         if search_note:
             response.findings.insert(0, _note_finding(search_note))
-        return self._finish(request, response)
+        return self._finish(request, response), transcripts
 
     def _resolve_skill(self, request: EvaluateRequest) -> list[str]:
         """Fills the candidate from tapes when the caller sent a skill_id

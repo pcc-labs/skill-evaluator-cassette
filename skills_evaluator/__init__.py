@@ -14,16 +14,28 @@ def main() -> None:
     )
     logger = logging.getLogger("skills_evaluator")
 
+    import os
+
     import dspy
     import uvicorn
 
     from .config import LLMUnconfiguredError, build_lm, load_settings
-    from .pipeline import SkillEvaluator
+    from .pipeline import SkillEvaluator, SkillReviser
     from .server import create_app
     from .service import EvaluationService, ServiceConfig
+    from .store import open_store
     from .tapes import TapesClient
 
     settings = load_settings()
+
+    store = open_store(os.environ.get("TAPES_DATABASE_URL", ""))
+    if store.kind() == "memory":
+        logger.warning(
+            "TAPES_DATABASE_URL is not set; revisions are memory-only "
+            "and vanish on restart"
+        )
+    else:
+        logger.info("revision store: postgres (schema \"skills-evaluator\")")
 
     service = None
     llm_error = ""
@@ -37,6 +49,8 @@ def main() -> None:
                 max_sessions=settings.max_sessions,
                 judge_model=settings.judge_model_label,
             ),
+            reviser=SkillReviser(),
+            store=store,
         )
         logger.info(
             "judge configured: %s; tapes at %s",

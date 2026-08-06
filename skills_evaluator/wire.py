@@ -116,6 +116,37 @@ class EvaluateResponse(BaseModel):
     mode: str = "llm"
 
 
+class RevisionStatusRequest(BaseModel):
+    """The status hook body: a host reporting what a human decided about a
+    proposed revision. This is the labeling event the corpus is built from."""
+
+    status: str
+    reason: str = ""
+
+
+class RevisionResponse(BaseModel):
+    """One stored revision: the proposed rewrite, the evaluation that
+    motivated it, and its lifecycle status."""
+
+    id: str
+    skill_id: str = ""
+    ref: Ref | None = None
+    skill_name: str = ""
+    status: str = "proposed"
+    status_reason: str = ""
+    revised_skill_md: str = ""
+    rationale: str = ""
+    evaluation: EvaluateResponse = Field(default_factory=EvaluateResponse)
+    created_at: str = ""
+    decided_at: str | None = None
+
+
+class RevisionListResponse(BaseModel):
+    """Revisions for one skill, newest first."""
+
+    items: list[RevisionResponse] = Field(default_factory=list)
+
+
 def normalize_findings(raw: list[Finding]) -> list[Finding]:
     """Bounds a judge's findings: capped count, valid severities, non-empty
     messages, sane line numbers. Protects the whole judgment for hosts

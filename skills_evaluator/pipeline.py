@@ -105,6 +105,57 @@ class SkillJudgment(dspy.Signature):
     findings: list[JudgeFinding] = dspy.OutputField()
 
 
+class SkillRevisionProposal(dspy.Signature):
+    """Rewrite a skill so the evaluation findings are addressed, grounded
+    ONLY in what the session evidence supports. Keep everything that was
+    right; change only what a finding or the evidence justifies; never
+    invent steps the evidence does not show. Preserve the document's
+    markdown structure and voice. The rationale must attribute every
+    material change to a finding or to specific evidence."""
+
+    skill_name: str = dspy.InputField()
+    skill_markdown: str = dspy.InputField(desc="the current skill document")
+    findings: str = dspy.InputField(desc="the evaluation's findings, one per line")
+    session_evidence: str = dspy.InputField(
+        desc="session transcripts with triage annotations"
+    )
+    revised_markdown: str = dspy.OutputField(desc="the complete revised document")
+    rationale: str = dspy.OutputField(
+        desc="2-4 sentences attributing each material change to a finding or evidence"
+    )
+
+
+class SkillReviser(dspy.Module):
+    """Proposes a revision of a skill from its evaluation. Kept separate
+    from SkillEvaluator so evaluation stays cheap and pure; revision is an
+    explicit, stored act — the unit the accept/reject corpus is built from."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.revise = dspy.ChainOfThought(SkillRevisionProposal)
+
+    def forward(
+        self,
+        skill_name: str,
+        skill_markdown: str,
+        findings: list[JudgeFinding],
+        session_evidence: str,
+    ) -> dspy.Prediction:
+        rendered = "\n".join(
+            f"- [{f.severity}] {f.rule_id}: {f.message}" for f in findings
+        ) or "- (no findings; tighten wording only where the evidence justifies it)"
+        proposal = self.revise(
+            skill_name=skill_name,
+            skill_markdown=skill_markdown[:MAX_CANDIDATE_PROMPT_CHARS],
+            findings=rendered,
+            session_evidence=session_evidence,
+        )
+        return dspy.Prediction(
+            revised_markdown=proposal.revised_markdown,
+            rationale=proposal.rationale,
+        )
+
+
 class SkillEvaluator(dspy.Module):
     """Triage each session, then judge the skill against the annotated
     evidence. Returns a Prediction carrying the judgment fields plus the

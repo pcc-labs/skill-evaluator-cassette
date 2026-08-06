@@ -32,6 +32,17 @@ health = "/ping"
 openapi = "/openapi"
 prefix_path = "api"
 
+# Tables this cassette owns in its own schema ("skills-evaluator"). The
+# declaration is for whoever provisions the database — core neither creates
+# the schema nor grants access to it. The cassette runs its own migration at
+# startup when the deployment supplies TAPES_DATABASE_URL; without one,
+# revisions fall back to an in-memory store. The revisions table is the
+# accept/reject corpus: each row links a proposed rewrite (and the
+# evaluation that motivated it) to a tapes skill id and, once a host reports
+# back, the human verdict.
+[[tables]]
+name = "revisions"
+
 # Configuration this cassette accepts, published as schema so a deployment
 # can render a form or validate values. Values arrive as CASSETTE_*
 # environment variables (dots become underscores:

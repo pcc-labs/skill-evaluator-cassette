@@ -61,7 +61,7 @@ tapes serve --cassettes=http://127.0.0.1:9978/openapi
 
 Tapes republishes the API at `POST /v1/cassettes/skills-evaluator/evaluate`.
 Configuration is environment-only, published as schema in
-[`src/skills_evaluator/cassette.toml`](./src/skills_evaluator/cassette.toml)
+[`skills_evaluator/cassette.toml`](./skills_evaluator/cassette.toml)
 (dots become underscores: `llm.api_key` → `CASSETTE_LLM_API_KEY`). Without an
 LLM credential the cassette still starts and answers discovery; `/evaluate`
 reports 503.
@@ -88,6 +88,39 @@ The response carries `decision` (`pass`/`revise`), attributed `findings`, a
 evidence metrics including `provenance_sessions`. Passing `baseline` frames
 the evaluation as an update replacing it; there is no separate "kind" field.
 
+## 🔁 Revisions: closing the loop
+
+Evaluation says *what's wrong*; revisions propose *the fix* and record what
+humans thought of it. `POST /revisions` (same body as `/evaluate`) runs the
+evaluation pipeline, then a `SkillRevisionProposal` DSPy step rewrites the
+skill so the findings are addressed — grounded only in the session evidence
+(409 when there is none: no ungrounded rewrites).
+
+Each revision is stored `proposed` in the cassette's **own Postgres table**
+(`"skills-evaluator".revisions`, declared in the manifest, migrated at
+startup when `TAPES_DATABASE_URL` is set; memory-only otherwise) with a
+loose `skill_id` link back to the tapes skills table, so a skill's whole
+revision history hangs together.
+
+Hosts report the human verdict through the status hook:
+
+```bash
+# propose a revision for a platform skill
+curl -s -X POST .../v1/cassettes/skills-evaluator/revisions \
+  -d '{"skill_id": "<uuid>"}' | jq '{id, status, revised_skill_md}'
+
+# the labeling hook: accepted | rejected (decided labels never flip — 409)
+curl -s -X POST .../v1/cassettes/skills-evaluator/revisions/<id>/status \
+  -d '{"status": "accepted", "reason": "applied in the console"}'
+
+# a skill's revision history
+curl -s ".../v1/cassettes/skills-evaluator/revisions?skill_id=<uuid>"
+```
+
+Every decided row is one labeled example — (skill + evidence, proposed
+rewrite, human verdict) — which is precisely the trainset a GEPA run needs.
+The corpus builds itself as a side effect of normal review.
+
 ## 🌲 Develop
 
 ```bash
@@ -106,13 +139,14 @@ models.
 The pipeline is deliberately shaped as a DSPy *program* so the optimizer
 story from the exploration notes plugs in without restructuring:
 
-- **GEPA over the skill itself** — the triage stage already produces the
-  labeled failure evidence a GEPA feedback function needs ("session s3
-  failed: the agent called search before checking auth; the skill never
-  mentions the precondition"). Evolving a `revise`-decision skill into a
-  proposed revision — and feeding it back through OpenClaw's
-  `skills.proposals.revise` with `expectedRevisionHash` — is the closed
-  loop.
+- **GEPA over the skill itself** — the pieces now exist end to end: the
+  triage stage produces the labeled failure evidence a feedback function
+  needs, `/revisions` produces candidate rewrites, and the status hook
+  accumulates accepted/rejected labels in the revisions table. A GEPA run
+  is "generate candidates with `SkillReviser`, score them with `/evaluate`,
+  seed the reflection LM with the decided corpus" — then feed winners back
+  through OpenClaw's `skills.proposals.revise` or a new tapes skill
+  version.
 - **GEPA/SIMBA over the pipeline** — `SessionTriage` and `SkillJudgment`
   instructions are themselves optimizable text once a small trainset of
   judged proposals exists; SIMBA's introspective rule mining is a bottom-up
