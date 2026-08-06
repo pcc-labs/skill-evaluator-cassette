@@ -1,0 +1,28 @@
+[project]
+name = "skills-evaluator"
+version = "0.1.0"
+description = "Tapes cassette that evaluates OpenClaw skill proposals against captured session data with DSPy"
+readme = "README.md"
+authors = [
+    { name = "John McBride", email = "john@papercompute.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "dspy>=3.0",
+    "fastapi>=0.115",
+    "httpx>=0.27",
+    "pydantic>=2.9",
+    "uvicorn>=0.32",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+]
+
+[project.scripts]
+skills-evaluator = "skills_evaluator:main"
+
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13.0"]
+build-backend = "uv_build"

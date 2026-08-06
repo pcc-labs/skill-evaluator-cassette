@@ -1,0 +1,230 @@
+"""Orchestration around the DSPy pipeline: query derivation, evidence
+gathering, the honest no-evidence path, and normalization into the wire
+contract. Everything model-shaped lives in ``pipeline``; everything
+tapes-shaped lives in ``tapes``; this module is the seam between them and
+the one the tests exercise with fakes."""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+
+import httpx
+
+from .pipeline import MAX_TRANSCRIPT_CHARS, RULESET_VERSION, JudgeFinding
+from .tapes import SearchHit, SearchUnavailableError, TapesClient
+from .wire import (
+    MAX_REASON_CHARS,
+    MAX_SUMMARY_CHARS,
+    EvaluateRequest,
+    EvaluateResponse,
+    Finding,
+    Metrics,
+    normalize_decision,
+    normalize_findings,
+)
+
+logger = logging.getLogger(__name__)
+
+MAX_QUERIES = 3
+MAX_QUERY_CHARS = 200
+
+VERSION = "0.1.0"
+
+
+@dataclass
+class ServiceConfig:
+    top_k: int = 5
+    max_sessions: int = 3
+    judge_model: str = ""
+    version: str = VERSION
+
+
+@dataclass
+class EvaluationService:
+    """Turns one proposal plus tapes telemetry into a judgment.
+
+    ``module`` is any callable with SkillEvaluator's forward signature —
+    the DSPy program in production, a stub in tests.
+    """
+
+    tapes: TapesClient
+    module: object
+    config: ServiceConfig = field(default_factory=ServiceConfig)
+
+    def evaluate(self, request: EvaluateRequest) -> EvaluateResponse:
+        hits, search_note = self._gather_hits(request)
+        session_ids = rank_sessions(hits, self.config.max_sessions)
+        transcripts = self._build_transcripts(session_ids)
+        combined_chars = sum(len(text) for _, text in transcripts)
+
+        metrics = Metrics(
+            sessions_considered=len(transcripts),
+            spans_matched=len(hits),
+            mean_search_score=round(
+                sum(h.score for h in hits) / len(hits), 6
+            )
+            if hits
+            else 0.0,
+            judge_model=self.config.judge_model,
+            transcript_chars=combined_chars,
+        )
+
+        if not transcripts:
+            return self._no_evidence_response(metrics, search_note)
+
+        prediction = self.module(
+            skill_name=request.skill.name,
+            proposal_kind=request.proposal.kind,
+            skill_markdown=request.candidate.skill_md,
+            baseline_markdown=request.baseline.skill_md if request.baseline else "",
+            transcripts=transcripts,
+        )
+
+        findings = normalize_findings(
+            [_to_wire_finding(f) for f in (prediction.findings or [])]
+        )
+        response = EvaluateResponse(
+            summary=str(prediction.summary or "").strip()[:MAX_SUMMARY_CHARS],
+            findings=findings,
+            metrics=metrics,
+            decision=normalize_decision(str(prediction.decision or ""), findings),
+            decision_reason=str(prediction.decision_reason or "").strip()[
+                :MAX_REASON_CHARS
+            ],
+            evaluator_version=f"{self.config.version}+{RULESET_VERSION}",
+            mode="llm",
+        )
+        if search_note:
+            response.findings.insert(0, _note_finding(search_note))
+        return response
+
+    def _gather_hits(
+        self, request: EvaluateRequest
+    ) -> tuple[list[SearchHit], str]:
+        """Runs every derived query through span search. A deployment
+        without search (503) is a degraded state to report, not an error;
+        any other failure means the core API is broken and the evaluation
+        cannot honestly proceed."""
+        hits: list[SearchHit] = []
+        for query in build_queries(request):
+            try:
+                hits.extend(self.tapes.search_spans(query, self.config.top_k))
+            except SearchUnavailableError:
+                return [], (
+                    "span search is not configured on this tapes deployment; "
+                    "the proposal was judged without session evidence"
+                )
+        return hits, ""
+
+    def _build_transcripts(self, session_ids: list[str]) -> list[tuple[str, str]]:
+        """Renders the ranked sessions' transcripts, truncating at a session
+        boundary within the same budget skill generation uses. A session
+        whose projection fails to load is skipped: partial evidence with a
+        correct count beats no judgment."""
+        transcripts: list[tuple[str, str]] = []
+        total = 0
+        for session_id in session_ids:
+            try:
+                text = self.tapes.session_transcript(session_id)
+            except (httpx.HTTPError, ValueError) as error:
+                logger.warning(
+                    "skipping session transcript", extra={"session_id": session_id}
+                )
+                logger.debug("transcript error: %s", error)
+                continue
+            if transcripts and total + len(text) > MAX_TRANSCRIPT_CHARS:
+                break
+            transcripts.append((session_id, text))
+            total += len(text)
+        return transcripts
+
+    def _no_evidence_response(
+        self, metrics: Metrics, search_note: str
+    ) -> EvaluateResponse:
+        """The honest answer when nothing in tapes relates to the proposal:
+        no findings against it, but a clearly-labeled absence of evidence
+        rather than an endorsement."""
+        note = search_note or (
+            "no captured sessions relate to this skill; "
+            "nothing to judge it against"
+        )
+        return EvaluateResponse(
+            summary=f"No session evidence: {note}.",
+            findings=[_note_finding(note)],
+            metrics=metrics,
+            decision="pass",
+            decision_reason="no session evidence contradicts the proposal",
+            evaluator_version=f"{self.config.version}+{RULESET_VERSION}",
+            mode="no-evidence",
+        )
+
+
+def build_queries(request: EvaluateRequest) -> list[str]:
+    """Derives the span-search queries from the proposal: the skill's own
+    name/description first, then its leading section headings — the terms an
+    agent doing this work would have used."""
+    queries: list[str] = []
+
+    def add(query: str) -> None:
+        query = query.strip()[:MAX_QUERY_CHARS]
+        if query and query not in queries:
+            queries.append(query)
+
+    add(f"{request.skill.name} {request.skill.description}".strip())
+    for heading in _leading_headings(
+        request.candidate.skill_md, MAX_QUERIES - len(queries)
+    ):
+        add(f"{request.skill.name} {heading}")
+    if not queries:
+        add(request.skill.name)
+    return queries
+
+
+def _leading_headings(markdown: str, n: int) -> list[str]:
+    headings: list[str] = []
+    for line in markdown.splitlines():
+        if n <= 0:
+            break
+        stripped = line.strip()
+        if stripped.startswith("## ") and stripped[3:].strip():
+            headings.append(stripped[3:].strip())
+            n -= 1
+    return headings
+
+
+def rank_sessions(hits: list[SearchHit], max_sessions: int) -> list[str]:
+    """Orders the hit sessions by their best score and keeps the top N.
+    Hits without a session id cannot produce a transcript and are dropped."""
+    best: dict[str, float] = {}
+    for hit in hits:
+        if not hit.session_id:
+            continue
+        if hit.score > best.get(hit.session_id, float("-inf")):
+            best[hit.session_id] = hit.score
+    ranked = sorted(best, key=lambda sid: (-best[sid], sid))
+    return ranked[:max_sessions]
+
+
+def _to_wire_finding(raw: object) -> Finding:
+    if isinstance(raw, JudgeFinding):
+        return Finding(
+            rule_id=raw.rule_id,
+            severity=raw.severity,
+            message=raw.message,
+            file=raw.file,
+            line=raw.line,
+        )
+    if isinstance(raw, dict):
+        return Finding(
+            rule_id=str(raw.get("rule_id", "")),
+            severity=str(raw.get("severity", "")),
+            message=str(raw.get("message", "")),
+            file=str(raw.get("file", "")),
+            line=int(raw.get("line", 0) or 0),
+        )
+    return Finding(message=str(raw))
+
+
+def _note_finding(note: str) -> Finding:
+    return Finding(rule_id="evidence.none", severity="info", message=note)

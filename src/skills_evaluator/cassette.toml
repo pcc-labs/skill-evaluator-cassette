@@ -1,0 +1,83 @@
+# The skills-evaluator cassette's publishable manifest.
+#
+# This is the authored form of the metadata the cassette serves at `/openapi`
+# under the `x-tapes-cassette` extension — what a registry or an orchestrator
+# reads *before* anything is running. The server reads this file (stdlib
+# tomllib) and embeds it verbatim in the OpenAPI document, so the authored
+# manifest and the served manifest are the same bytes by construction.
+#
+# The cassette owns no tables and reads no contract views: session evidence
+# comes through tapes core's own HTTP surface (/v1/search/spans, /v1/traces).
+# What it needs is an LLM credential for the DSPy judge — without one it
+# starts, answers discovery, and reports 503 from /evaluate.
+
+kind = "cassette/v1alpha1"
+
+[cassette]
+name = "skills-evaluator"
+version = "0.1.0"
+display_name = "Skills Evaluator"
+description = "Evaluates OpenClaw Skill Workshop proposals against captured tapes sessions with a DSPy pipeline."
+license = "Apache-2.0"
+homepage = "https://github.com/papercomputeco/skills-evaluator"
+image = "tapes/skills-evaluator-cassette:0.1.0"
+port = 9978
+
+[depends]
+core = "v1"
+views = []
+
+[api]
+health = "/ping"
+openapi = "/openapi"
+prefix_path = "api"
+
+# Configuration this cassette accepts, published as schema so a deployment
+# can render a form or validate values. Values arrive as CASSETTE_*
+# environment variables (dots become underscores:
+# llm.api_key -> CASSETTE_LLM_API_KEY).
+
+[[config]]
+key = "tapes_base_url"
+type = "string"
+default = "http://127.0.0.1:8081"
+description = "Base URL of the tapes core API used for span search and trace reads."
+
+[[config]]
+key = "search_top_k"
+type = "int"
+default = 5
+min = 1
+max = 50
+description = "Span-search depth per derived query."
+
+[[config]]
+key = "max_sessions"
+type = "int"
+default = 3
+min = 1
+max = 10
+description = "How many matched sessions feed the triage + judge pipeline."
+
+[[config]]
+key = "llm.provider"
+type = "string"
+default = "anthropic"
+enum = ["anthropic", "openai", "ollama"]
+description = "Provider for the DSPy judge model."
+
+[[config]]
+key = "llm.model"
+type = "string"
+description = "Judge model; empty uses the provider's default."
+
+[[config]]
+key = "llm.api_key"
+type = "string"
+secret = true
+description = "API key for the judge provider (unused for ollama)."
+
+[[config]]
+key = "llm.base_url"
+type = "string"
+description = "Override base URL for the judge provider."
