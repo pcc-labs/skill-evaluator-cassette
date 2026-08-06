@@ -1,18 +1,24 @@
-# skills-evaluator
+# 🍳 skills-evaluator-cassette
 
-A [tapes cassette](https://github.com/papercomputeco/tapes) that evaluates
-**skill documents** against real captured session data, built on
-[DSPy](https://dspy.ai/).
+An agnostic [tapes cassette](https://github.com/papercomputeco/tapes) that evaluates provided
+skill documents against real captured session data, built on
+[DSPy GEPA optimizers](https://dspy.ai/getting-started/gepa-optimization/).
 
-The contract is host-neutral: `POST /evaluate` takes a skill (inline
+---
+
+## 🧪 How it works
+
+`POST /evaluate` takes a skill (inline
 markdown, or a tapes `skill_id` the cassette resolves itself), an optional
 baseline it would replace, and opaque `ref` correlation metadata echoed back
-in the response. Hosts conform through thin adapters — OpenClaw's
+in the response.
+
+Hosts conform through thin adapters — OpenClaw's
 [Skill Workshop](https://docs.openclaw.ai/tools/skill-workshop) plugs in via
-the `tapes-skills` Gateway plugin, and platform callers (console, CLI, a
+the `openclaw-tapes` Openclaw Gateway plugin. Paper platform callers (console, CLI, a
 generation-time quality gate) can POST a `skill_id` directly.
 
-Either way, the cassette grounds the judgment in tapes telemetry through a
+The cassette grounds the judgment in tapes telemetry through a
 two-stage DSPy pipeline:
 
 1. **Evidence selection** — a skill resolved by `skill_id` brings its
@@ -37,10 +43,13 @@ gates apply inside OpenClaw — an LLM judgment over partial evidence advises,
 it does not gate), and missing evidence is stated, not papered over (`pass`
 in mode `no-evidence` with an `evidence.none` finding).
 
-## Run it
+## 🏃 Run it
 
 ```bash
+# Enter the nix shell
 direnv allow
+
+# Make sure you have a uv venv setup!
 uv sync
 
 # against a local tapes + ollama (keyless):
@@ -79,7 +88,7 @@ The response carries `decision` (`pass`/`revise`), attributed `findings`, a
 evidence metrics including `provenance_sessions`. Passing `baseline` frames
 the evaluation as an update replacing it; there is no separate "kind" field.
 
-## Develop
+## 🌲 Develop
 
 ```bash
 uv run pytest      # no services or models needed: DSPy modules and tapes are faked
