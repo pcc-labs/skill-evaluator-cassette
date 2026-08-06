@@ -14,14 +14,20 @@ from skills_evaluator.wire import (
 
 def test_request_parses_snake_case():
     request = EvaluateRequest.model_validate_json(
-        b'{"proposal": {"id": "p1", "kind": "update", "revision_sha256": "abc"},'
+        b'{"ref": {"source": "openclaw", "id": "p1", "revision_sha256": "abc"},'
         b' "skill": {"name": "n", "description": "d"},'
         b' "candidate": {"skill_md": "# s", "files": [{"path": "a.md", "content": "x"}]},'
         b' "baseline": {"skill_md": "# old"}}'
     )
-    assert request.proposal.revision_sha256 == "abc"
+    assert request.ref is not None and request.ref.revision_sha256 == "abc"
     assert request.candidate.files[0].path == "a.md"
     assert request.baseline is not None and request.baseline.skill_md == "# old"
+
+
+def test_request_accepts_skill_id_alone():
+    request = EvaluateRequest.model_validate_json(b'{"skill_id": "sk-1"}')
+    assert request.skill_id == "sk-1"
+    assert request.candidate.skill_md == ""
 
 
 def test_response_serializes_snake_case():
@@ -35,7 +41,9 @@ def test_response_serializes_snake_case():
         '"severity"',
         '"metrics"',
         '"sessions_considered"',
+        '"provenance_sessions"',
         '"decision"',
+        '"score"',
         '"evaluator_version"',
         '"mode"',
     ):
@@ -66,3 +74,15 @@ def test_normalize_decision_never_blocks():
     assert normalize_decision("pass", warn) == "pass"
     assert normalize_decision("nonsense", warn) == "revise"
     assert normalize_decision("", []) == "pass"
+
+
+def test_normalize_score():
+    from skills_evaluator.wire import normalize_score
+
+    assert normalize_score(0.7) == 0.7
+    assert normalize_score(7) == 1.0
+    assert normalize_score(-1) == 0.0
+    assert normalize_score("0.4") == 0.4
+    assert normalize_score("high") is None
+    assert normalize_score(None) is None
+    assert normalize_score(float("nan")) is None

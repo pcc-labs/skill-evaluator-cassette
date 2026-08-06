@@ -3,8 +3,13 @@ from __future__ import annotations
 import pytest
 
 from skills_evaluator.pipeline import RULESET_VERSION
-from skills_evaluator.service import build_queries, rank_sessions
-from skills_evaluator.tapes import SearchHit, SearchUnavailableError
+from skills_evaluator.service import build_queries, merge_evidence_sessions
+from skills_evaluator.tapes import (
+    SearchHit,
+    SearchUnavailableError,
+    SkillNotFoundError,
+    SkillRecord,
+)
 from skills_evaluator.wire import Bundle, EvaluateRequest, SkillRef
 
 
@@ -58,41 +63,27 @@ class TestWithEvidence:
 
         assert response.decision == "pass"
         assert response.mode == "llm"
+        assert response.score == pytest.approx(0.9)
+        assert response.ref is not None and response.ref.id == "prop-1"
         assert response.evaluator_version == "0.0.0-test+" + RULESET_VERSION
         assert [f.rule_id for f in response.findings] == ["clarity.ambiguous"]
-        assert response.findings[0].line == 12
         assert response.metrics.sessions_considered == 2
-        assert response.metrics.spans_matched == 2
+        assert response.metrics.provenance_sessions == 0
         assert response.metrics.judge_model == "fake/judge"
 
     def test_baseline_forwarded_for_updates(self, service, fake_module, request_fixture):
-        request_fixture.proposal.kind = "update"
         request_fixture.baseline = Bundle(skill_md="# Old skill")
         service.evaluate(request_fixture)
         assert fake_module.calls[0]["baseline_markdown"] == "# Old skill"
 
-    def test_ranks_by_best_score_and_caps_sessions(
-        self, service, fake_tapes, fake_module, request_fixture
-    ):
-        fake_tapes.hits["morning-catchup Triage inbox"] = [hit("s3", 0.95)]
-        fake_tapes.transcripts["s3"] = "[user] sort out my backlog\n"
-
-        response = service.evaluate(request_fixture)
-
-        # max_sessions is 2: s3 (0.95) and s1 (0.9) win; s2 is cut.
-        assert [sid for sid, _ in fake_module.calls[0]["transcripts"]] == ["s3", "s1"]
-        assert response.metrics.sessions_considered == 2
+    def test_score_clamped(self, service, fake_module, request_fixture):
+        fake_module.prediction.score = 3.7
+        assert service.evaluate(request_fixture).score == 1.0
+        fake_module.prediction.score = "not a number"
+        assert service.evaluate(request_fixture).score is None
 
     def test_skips_unloadable_sessions(self, service, fake_tapes, request_fixture):
         del fake_tapes.transcripts["s1"]
-        response = service.evaluate(request_fixture)
-        assert response.metrics.sessions_considered == 1
-
-    def test_drops_hits_without_session_id(self, service, fake_tapes, request_fixture):
-        fake_tapes.hits["morning-catchup Daily inbox triage"] = [
-            hit("", 0.99),
-            hit("s1", 0.9),
-        ]
         response = service.evaluate(request_fixture)
         assert response.metrics.sessions_considered == 1
 
@@ -102,6 +93,62 @@ class TestWithEvidence:
             service.evaluate(request_fixture)
 
 
+class TestSkillResolution:
+    @pytest.fixture(autouse=True)
+    def seed(self, fake_tapes):
+        fake_tapes.skills["sk-1"] = SkillRecord(
+            id="sk-1",
+            name="morning-catchup",
+            description="Daily inbox triage",
+            content="# Morning catchup\n\n## Triage inbox\n\nSteps.",
+            originating_session_ids=["prov-1", "prov-2"],
+        )
+        for sid in ("prov-1", "prov-2", "s1"):
+            fake_tapes.transcripts[sid] = f"[user] work in {sid}\n"
+
+    def test_resolves_content_and_identity(self, service, fake_module):
+        request = EvaluateRequest(skill_id="sk-1")
+        response = service.evaluate(request)
+
+        call = fake_module.calls[0]
+        assert call["skill_name"] == "morning-catchup"
+        assert "# Morning catchup" in call["skill_markdown"]
+        assert response.mode == "llm"
+
+    def test_provenance_outranks_search(self, service, fake_tapes, fake_module):
+        fake_tapes.hits["morning-catchup Daily inbox triage"] = [hit("s1", 0.99)]
+
+        response = service.evaluate(EvaluateRequest(skill_id="sk-1"))
+
+        # max_sessions is 2: both provenance sessions win over the 0.99 hit.
+        assert [sid for sid, _ in fake_module.calls[0]["transcripts"]] == [
+            "prov-1",
+            "prov-2",
+        ]
+        assert response.metrics.provenance_sessions == 2
+
+    def test_inline_content_wins_over_stored(self, service, fake_module):
+        request = EvaluateRequest(
+            skill_id="sk-1", candidate=Bundle(skill_md="# Edited draft")
+        )
+        service.evaluate(request)
+        assert fake_module.calls[0]["skill_markdown"] == "# Edited draft"
+
+    def test_unknown_skill_raises(self, service):
+        with pytest.raises(SkillNotFoundError):
+            service.evaluate(EvaluateRequest(skill_id="nope"))
+
+    def test_provenance_survives_search_unavailable(
+        self, service, fake_tapes, fake_module
+    ):
+        fake_tapes.search_error = SearchUnavailableError("not configured")
+        response = service.evaluate(EvaluateRequest(skill_id="sk-1"))
+
+        assert response.mode == "llm"
+        assert response.metrics.provenance_sessions == 2
+        assert any("span search is not configured" in f.message for f in response.findings)
+
+
 class TestWithoutEvidence:
     def test_no_matches_is_an_honest_pass(self, service, fake_module, request_fixture):
         response = service.evaluate(request_fixture)
@@ -109,6 +156,8 @@ class TestWithoutEvidence:
         assert fake_module.calls == []
         assert response.decision == "pass"
         assert response.mode == "no-evidence"
+        assert response.score is None
+        assert response.ref is not None and response.ref.source == "test"
         assert [f.rule_id for f in response.findings] == ["evidence.none"]
         assert response.metrics.sessions_considered == 0
 
@@ -124,7 +173,15 @@ class TestWithoutEvidence:
             service.evaluate(request_fixture)
 
 
-class TestRanking:
-    def test_deterministic_order(self):
-        hits = [hit("b", 0.5), hit("a", 0.5), hit("c", 0.9)]
-        assert rank_sessions(hits, 10) == ["c", "a", "b"]
+class TestEvidenceMerge:
+    def test_provenance_first_then_ranked_search_dedup(self):
+        chosen = merge_evidence_sessions(
+            ["p1", "", "p2", "p1"],
+            [hit("s-low", 0.5), hit("p1", 0.99), hit("s-high", 0.9)],
+            10,
+        )
+        assert chosen == ["p1", "p2", "s-high", "s-low"]
+
+    def test_cap_applies_after_merge(self):
+        chosen = merge_evidence_sessions(["p1"], [hit("s1", 0.9)], 1)
+        assert chosen == ["p1"]

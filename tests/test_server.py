@@ -39,13 +39,20 @@ def test_openapi_embeds_manifest_and_declares_prefixed_path(client):
     assert "EvaluateRequest" in document["components"]["schemas"]
 
 
-def test_evaluate_requires_skill_md(client):
+def test_evaluate_requires_skill_md_or_skill_id(client):
     response = client.post(
         "/api/skills-evaluator/evaluate",
         json={"skill": {"name": "n"}, "candidate": {"skill_md": "  "}},
     )
     assert response.status_code == 400
-    assert "skill_md" in response.json()["detail"]
+    assert "skill_id" in response.json()["detail"]
+
+
+def test_unknown_skill_id_is_404(client):
+    response = client.post(
+        "/api/skills-evaluator/evaluate", json={"skill_id": "nope"}
+    )
+    assert response.status_code == 404
 
 
 def test_evaluate_returns_judgment(client, fake_tapes):

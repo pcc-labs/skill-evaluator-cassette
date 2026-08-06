@@ -28,6 +28,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from .service import EvaluationService
+from .tapes import SkillNotFoundError
 from .wire import EvaluateRequest, EvaluateResponse
 
 logger = logging.getLogger(__name__)
@@ -83,23 +84,28 @@ def create_app(
             raise HTTPException(
                 status_code=400, detail=f"body must be a valid request: {error}"
             ) from error
-        if not parsed.candidate.skill_md.strip():
+        if not parsed.candidate.skill_md.strip() and not parsed.skill_id.strip():
             raise HTTPException(
-                status_code=400, detail="candidate.skill_md is required"
+                status_code=400,
+                detail="either candidate.skill_md or skill_id is required",
             )
         try:
             response = service.evaluate(parsed)
+        except SkillNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
         except Exception as error:  # noqa: BLE001 - the boundary reports, never hides
             logger.exception(
-                "evaluation failed for proposal %s", parsed.proposal.id
+                "evaluation failed for skill %s",
+                parsed.skill_id or parsed.skill.name,
             )
             raise HTTPException(
                 status_code=502, detail=f"evaluation failed: {error}"
             ) from error
         logger.info(
-            "evaluated skill proposal %s: decision=%s findings=%d sessions=%d",
-            parsed.proposal.id,
+            "evaluated skill %s: decision=%s score=%s findings=%d sessions=%d",
+            parsed.skill_id or parsed.skill.name or (parsed.ref.id if parsed.ref else ""),
             response.decision,
+            response.score,
             len(response.findings),
             response.metrics.sessions_considered,
         )
@@ -136,14 +142,16 @@ def _openapi_document(manifest: dict[str, Any], prefix: str) -> dict[str, Any]:
         "paths": {
             f"{prefix}/evaluate": {
                 "post": {
-                    "operationId": "evaluateSkillProposal",
-                    "summary": "Judge one skill proposal against captured session evidence",
+                    "operationId": "evaluateSkill",
+                    "summary": "Judge one skill document against captured session evidence",
                     "description": (
-                        "Searches tapes spans for sessions related to the proposed "
-                        "skill, triages each matched session's transcript, and runs "
-                        "a DSPy judgment over the proposal and the annotated "
-                        "evidence. Returns findings, metrics, and a pass/revise "
-                        "decision shaped for OpenClaw's skill_proposal_evaluate hook."
+                        "Accepts the skill inline or as a tapes skill_id (resolved "
+                        "with its provenance sessions as seed evidence), finds "
+                        "related sessions via span search, triages each transcript, "
+                        "and runs a DSPy judgment over the annotated evidence. "
+                        "Returns findings, metrics, a 0..1 score, and a pass/revise "
+                        "decision. Host adapters (e.g. the OpenClaw Gateway plugin) "
+                        "conform their events to this shape."
                     ),
                     "tags": [manifest["cassette"]["name"]],
                     "requestBody": {

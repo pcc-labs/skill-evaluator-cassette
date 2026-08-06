@@ -6,16 +6,18 @@ import pytest
 
 from skills_evaluator.pipeline import JudgeFinding
 from skills_evaluator.service import EvaluationService, ServiceConfig
-from skills_evaluator.tapes import SearchHit
-from skills_evaluator.wire import Bundle, EvaluateRequest, ProposalRef, SkillRef
+from skills_evaluator.tapes import SearchHit, SkillNotFoundError, SkillRecord
+from skills_evaluator.wire import Bundle, EvaluateRequest, Ref, SkillRef
 
 
 @dataclass
 class FakeTapes:
-    """Stands in for TapesClient: canned hits per query, canned transcripts."""
+    """Stands in for TapesClient: canned hits per query, canned transcripts,
+    canned skills."""
 
     hits: dict[str, list[SearchHit]] = field(default_factory=dict)
     transcripts: dict[str, str] = field(default_factory=dict)
+    skills: dict[str, SkillRecord] = field(default_factory=dict)
     search_error: Exception | None = None
     queries: list[str] = field(default_factory=list)
 
@@ -30,12 +32,18 @@ class FakeTapes:
             raise ValueError(f"unknown session {session_id}")
         return self.transcripts[session_id]
 
+    def get_skill(self, skill_id: str) -> SkillRecord:
+        if skill_id not in self.skills:
+            raise SkillNotFoundError(f"skill {skill_id} not found")
+        return self.skills[skill_id]
+
 
 @dataclass
 class Prediction:
     summary: str = "The skill matches how the sessions actually went."
     decision: str = "pass"
     decision_reason: str = "supported by the evidence"
+    score: float = 0.9
     findings: list = field(default_factory=list)
     triages: list = field(default_factory=list)
 
@@ -91,7 +99,7 @@ def service(fake_tapes: FakeTapes, fake_module: FakeModule) -> EvaluationService
 @pytest.fixture
 def request_fixture() -> EvaluateRequest:
     return EvaluateRequest(
-        proposal=ProposalRef(id="prop-1", kind="create", revision="v1"),
+        ref=Ref(source="test", id="prop-1", revision="v1"),
         skill=SkillRef(name="morning-catchup", description="Daily inbox triage"),
         candidate=Bundle(
             skill_md=(

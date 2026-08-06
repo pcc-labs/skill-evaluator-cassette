@@ -1,18 +1,26 @@
 # skills-evaluator
 
 A [tapes cassette](https://github.com/papercomputeco/tapes) that evaluates
-OpenClaw [Skill Workshop](https://docs.openclaw.ai/tools/skill-workshop)
-proposals against real captured session data, built on
+**skill documents** against real captured session data, built on
 [DSPy](https://dspy.ai/).
 
-When OpenClaw evaluates a skill proposal, its `tapes-skills` Gateway plugin
-forwards the candidate bundle here. The cassette grounds the judgment in
-tapes telemetry through a two-stage DSPy pipeline:
+The contract is host-neutral: `POST /evaluate` takes a skill (inline
+markdown, or a tapes `skill_id` the cassette resolves itself), an optional
+baseline it would replace, and opaque `ref` correlation metadata echoed back
+in the response. Hosts conform through thin adapters — OpenClaw's
+[Skill Workshop](https://docs.openclaw.ai/tools/skill-workshop) plugs in via
+the `tapes-skills` Gateway plugin, and platform callers (console, CLI, a
+generation-time quality gate) can POST a `skill_id` directly.
 
-1. **Search** — the skill's name, description, and headings become span
-   search queries (`GET /v1/search/spans`) that find the captured sessions
-   the skill is actually about; their derived projections render as
-   transcripts.
+Either way, the cassette grounds the judgment in tapes telemetry through a
+two-stage DSPy pipeline:
+
+1. **Evidence selection** — a skill resolved by `skill_id` brings its
+   **provenance** (`originatingSessionIds`, the sessions it was generated
+   from), which outranks anything search can find; span search
+   (`GET /v1/search/spans`) over the skill's name, description, and headings
+   tops up the evidence with newer related sessions. Chosen sessions render
+   as transcripts.
 2. **Triage** (`dspy.ChainOfThought(SessionTriage)`) — each transcript is
    classified for the implicit supervision agent traces carry: tool errors,
    retries, loops, corrections, abandonment → `outcome`, `failure_mode`,
@@ -50,14 +58,26 @@ LLM credential the cassette still starts and answers discovery; `/evaluate`
 reports 503.
 
 ```bash
+# Inline document (what the OpenClaw plugin sends):
 curl -s -X POST http://127.0.0.1:8081/v1/cassettes/skills-evaluator/evaluate \
   -H 'Content-Type: application/json' \
   -d '{
-    "proposal": {"id": "prop-1", "kind": "create"},
+    "ref": {"source": "openclaw", "id": "prop-1"},
     "skill": {"name": "morning-catchup", "description": "Daily inbox triage"},
     "candidate": {"skill_md": "# Morning catchup\n\n## Triage inbox\n\n1. ..."}
   }' | jq
+
+# A platform skill by id — resolved from tapes, judged against its
+# provenance sessions first:
+curl -s -X POST http://127.0.0.1:8081/v1/cassettes/skills-evaluator/evaluate \
+  -H 'Content-Type: application/json' \
+  -d '{"skill_id": "<uuid from GET /v1/skills>"}' | jq '{decision, score, metrics}'
 ```
+
+The response carries `decision` (`pass`/`revise`), attributed `findings`, a
+0..1 `score` (null when there was no evidence — a GEPA-ready metric), and
+evidence metrics including `provenance_sessions`. Passing `baseline` frames
+the evaluation as an update replacing it; there is no separate "kind" field.
 
 ## Develop
 

@@ -98,6 +98,10 @@ class SkillJudgment(dspy.Signature):
     )
     decision: Literal["pass", "revise"] = dspy.OutputField()
     decision_reason: str = dspy.OutputField(desc="one sentence")
+    score: float = dspy.OutputField(
+        desc="quality estimate in [0.0, 1.0]: 1.0 = accurate, complete, and "
+        "fully supported by the evidence; below 0.5 = the findings warrant revision"
+    )
     findings: list[JudgeFinding] = dspy.OutputField()
 
 
@@ -115,7 +119,6 @@ class SkillEvaluator(dspy.Module):
     def forward(
         self,
         skill_name: str,
-        proposal_kind: str,
         skill_markdown: str,
         baseline_markdown: str,
         transcripts: list[tuple[str, str]],
@@ -140,7 +143,9 @@ class SkillEvaluator(dspy.Module):
 
         judgment = self.judge(
             skill_name=skill_name,
-            proposal_kind="update" if proposal_kind == "update" else "create",
+            # An update is fully encoded by the baseline's presence; there
+            # is no separate proposal-kind concept on the wire.
+            proposal_kind="update" if baseline_markdown.strip() else "create",
             skill_markdown=skill_markdown[:MAX_CANDIDATE_PROMPT_CHARS],
             baseline_markdown=baseline_markdown[:MAX_BASELINE_PROMPT_CHARS],
             session_evidence="\n---\n".join(annotated),
@@ -149,6 +154,7 @@ class SkillEvaluator(dspy.Module):
             summary=judgment.summary,
             decision=judgment.decision,
             decision_reason=judgment.decision_reason,
+            score=judgment.score,
             findings=judgment.findings,
             triages=triages,
         )

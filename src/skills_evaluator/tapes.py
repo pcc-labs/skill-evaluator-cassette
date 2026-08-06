@@ -23,6 +23,10 @@ class SearchUnavailableError(Exception):
     The evaluator degrades to a no-evidence judgment instead of failing."""
 
 
+class SkillNotFoundError(Exception):
+    """Tapes answered 404 for a skill_id: nothing to evaluate."""
+
+
 @dataclass
 class SearchHit:
     """One span-search result reduced to what evaluation uses."""
@@ -32,6 +36,19 @@ class SearchHit:
     score: float
     user_prompt: str = ""
     snippet: str = ""
+
+
+@dataclass
+class SkillRecord:
+    """The slice of a tapes skill (GET /v1/skills/{id}) evaluation uses.
+    ``originating_session_ids`` is the provenance — the sessions the skill
+    was generated from — and the strongest evidence to judge it against."""
+
+    id: str
+    name: str
+    description: str
+    content: str
+    originating_session_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -84,6 +101,24 @@ class TapesClient:
             )
             for hit in results
         ]
+
+    def get_skill(self, skill_id: str) -> SkillRecord:
+        """Resolves a platform skill by id. The skills surface is camelCase
+        (it predates the rest of the API's snake_case; the console owns it)."""
+        response = self._client.get(f"{self.base_url}/v1/skills/{skill_id}")
+        if response.status_code == 404:
+            raise SkillNotFoundError(f"skill {skill_id} not found")
+        response.raise_for_status()
+        body = response.json()
+        return SkillRecord(
+            id=body.get("id", skill_id),
+            name=body.get("name", ""),
+            description=body.get("description", ""),
+            content=body.get("content", ""),
+            originating_session_ids=[
+                sid for sid in (body.get("originatingSessionIds") or []) if sid
+            ],
+        )
 
     def trace_summaries(self, session_id: str) -> list[TraceSummary]:
         response = self._client.get(
