@@ -19,6 +19,7 @@ keep its old name in the contract.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import tomllib
 from importlib import resources
@@ -27,12 +28,22 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .service import EvaluationService, NoEvidenceError
-from .store import ACCEPTED, REJECTED, AlreadyDecidedError, RevisionRecord
+from .service import EvaluationService, NoEvidenceError, RevisionFailedError
+from .store import (
+    ACCEPTED,
+    REJECTED,
+    AlreadyDecidedError,
+    EditedSpecError,
+    EvalRecord,
+    RevisionRecord,
+)
 from .tapes import SkillNotFoundError
 from .wire import (
     EvaluateRequest,
     EvaluateResponse,
+    EvalResponse,
+    EvalSpec,
+    EvalUpdateRequest,
     Ref,
     RevisionListResponse,
     RevisionResponse,
@@ -88,7 +99,10 @@ def create_app(
             raise HTTPException(status_code=413, detail="request body too large")
         parsed = parse_evaluate_body(body)
         try:
-            response = service.evaluate(parsed)
+            # The pipeline is synchronous (DSPy + httpx); run it off the
+            # event loop so /ping and concurrent requests stay responsive
+            # during a long judge call.
+            response = await asyncio.to_thread(service.evaluate, parsed)
         except SkillNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except Exception as error:  # noqa: BLE001 - the boundary reports, never hides
@@ -136,11 +150,15 @@ def create_app(
             raise HTTPException(status_code=413, detail="request body too large")
         parsed = parse_evaluate_body(body)
         try:
-            record = service.revise(parsed)
+            # Synchronous pipeline off the event loop, same as /evaluate:
+            # a long judge+reviser call must not block /ping or discovery.
+            record = await asyncio.to_thread(service.revise, parsed)
         except SkillNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except NoEvidenceError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+        except RevisionFailedError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
         except Exception as error:  # noqa: BLE001 - the boundary reports, never hides
             logger.exception(
                 "revision failed for skill %s", parsed.skill_id or parsed.skill.name
@@ -198,7 +216,90 @@ def create_app(
         logger.info("revision %s labeled %s", revision_id, status)
         return _revision_response(record)
 
+    @app.post(f"{prefix}/evals", response_model=EvalResponse, status_code=201)
+    async def create_eval(request: Request, force: bool = False) -> EvalResponse:
+        """Generate (or return) the skill's eval spec. Never regenerates
+        over a human-edited spec; force only replaces a generated one."""
+        if service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="eval generation is not configured: no LLM credential resolved"
+                + (f" ({llm_error})" if llm_error else ""),
+            )
+        parsed = parse_evaluate_body(await request.body())
+        try:
+            record = await asyncio.to_thread(service.generate_eval, parsed, force)
+        except SkillNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except EditedSpecError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except Exception as error:  # noqa: BLE001 - the boundary reports, never hides
+            logger.exception(
+                "eval generation failed for %s", parsed.skill_id or parsed.skill.name
+            )
+            raise HTTPException(
+                status_code=502, detail=f"eval generation failed: {error}"
+            ) from error
+        logger.info("eval spec %s stored for %s", record.id, record.skill_key)
+        return _eval_response(record)
+
+    @app.get(f"{prefix}/evals", response_model=EvalResponse)
+    def get_eval_for_skill(skill_id: str = "", skill_name: str = "") -> EvalResponse:
+        if service is None or service.store is None:
+            raise HTTPException(status_code=503, detail="eval store unavailable")
+        key = skill_id.strip() or skill_name.strip()
+        if not key:
+            raise HTTPException(status_code=400, detail="skill_id or skill_name is required")
+        record = service.store.get_eval_for_key(key)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"no eval spec for {key!r}")
+        return _eval_response(record)
+
+    @app.get(prefix + "/evals/{eval_id}", response_model=EvalResponse)
+    def get_eval(eval_id: str) -> EvalResponse:
+        if service is None or service.store is None:
+            raise HTTPException(status_code=503, detail="eval store unavailable")
+        record = service.store.get_eval(eval_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="eval spec not found")
+        return _eval_response(record)
+
+    @app.put(prefix + "/evals/{eval_id}", response_model=EvalResponse)
+    async def update_eval(eval_id: str, request: Request) -> EvalResponse:
+        """The human edit: replace the spec. Origin flips to `edited` and
+        generation can never overwrite it again — editing the spec is
+        editing the metric, and the human's metric wins."""
+        if service is None or service.store is None:
+            raise HTTPException(status_code=503, detail="eval store unavailable")
+        try:
+            update = EvalUpdateRequest.model_validate_json(await request.body())
+        except ValueError as error:
+            raise HTTPException(
+                status_code=400, detail=f"body must be a valid spec update: {error}"
+            ) from error
+        record = service.store.update_eval_spec(eval_id, update.spec.model_dump())
+        if record is None:
+            raise HTTPException(status_code=404, detail="eval spec not found")
+        logger.info("eval spec %s edited (origin now %s)", eval_id, record.origin)
+        return _eval_response(record)
+
     return app
+
+
+def _eval_response(record: EvalRecord) -> EvalResponse:
+    return EvalResponse(
+        id=record.id,
+        skill_key=record.skill_key,
+        skill_id=record.skill_id,
+        skill_name=record.skill_name,
+        origin=record.origin,
+        spec=EvalSpec.model_validate(record.spec),
+        spec_sha256=record.spec_sha256,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
 
 
 def _revision_response(record: RevisionRecord) -> RevisionResponse:
@@ -236,6 +337,8 @@ def _openapi_document(manifest: dict[str, Any], prefix: str) -> dict[str, Any]:
     revision_ref = schema_ref(RevisionResponse)
     revision_list_ref = schema_ref(RevisionListResponse)
     status_ref = schema_ref(RevisionStatusRequest)
+    eval_ref = schema_ref(EvalResponse)
+    eval_update_ref = schema_ref(EvalUpdateRequest)
 
     return {
         "openapi": "3.0.3",
@@ -246,6 +349,99 @@ def _openapi_document(manifest: dict[str, Any], prefix: str) -> dict[str, Any]:
         },
         "x-tapes-cassette": manifest,
         "paths": {
+            f"{prefix}/evals": {
+                "post": {
+                    "operationId": "generateSkillEval",
+                    "summary": "Generate (or return) a skill's eval spec",
+                    "description": (
+                        "Drafts checkable criteria and test cases from the skill's "
+                        "own claims, seeded with session evidence when any exists. "
+                        "Returns the existing spec unchanged unless force=true; "
+                        "never regenerates over a human-edited spec (409)."
+                    ),
+                    "tags": [manifest["cassette"]["name"]],
+                    "parameters": [
+                        {
+                            "name": "force",
+                            "in": "query",
+                            "schema": {"type": "boolean", "default": False},
+                        }
+                    ],
+                    "requestBody": {
+                        "required": True,
+                        "content": {"application/json": {"schema": request_ref}},
+                    },
+                    "responses": {
+                        "201": {
+                            "description": "The stored eval spec",
+                            "content": {"application/json": {"schema": eval_ref}},
+                        }
+                    },
+                },
+                "get": {
+                    "operationId": "getSkillEvalByKey",
+                    "summary": "Fetch the eval spec for a skill",
+                    "tags": [manifest["cassette"]["name"]],
+                    "parameters": [
+                        {"name": "skill_id", "in": "query", "schema": {"type": "string"}},
+                        {"name": "skill_name", "in": "query", "schema": {"type": "string"}},
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "The skill's eval spec",
+                            "content": {"application/json": {"schema": eval_ref}},
+                        }
+                    },
+                },
+            },
+            f"{prefix}/evals/{{eval_id}}": {
+                "get": {
+                    "operationId": "getSkillEval",
+                    "summary": "Fetch one eval spec",
+                    "tags": [manifest["cassette"]["name"]],
+                    "parameters": [
+                        {
+                            "name": "eval_id",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "The eval spec",
+                            "content": {"application/json": {"schema": eval_ref}},
+                        }
+                    },
+                },
+                "put": {
+                    "operationId": "editSkillEval",
+                    "summary": "Replace a spec's criteria (the human edit)",
+                    "description": (
+                        "Origin flips to `edited`; generation can never overwrite "
+                        "an edited spec. Editing the spec is editing the metric."
+                    ),
+                    "tags": [manifest["cassette"]["name"]],
+                    "parameters": [
+                        {
+                            "name": "eval_id",
+                            "in": "path",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        }
+                    ],
+                    "requestBody": {
+                        "required": True,
+                        "content": {"application/json": {"schema": eval_update_ref}},
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "The edited eval spec",
+                            "content": {"application/json": {"schema": eval_ref}},
+                        }
+                    },
+                },
+            },
             f"{prefix}/revisions": {
                 "post": {
                     "operationId": "proposeSkillRevision",

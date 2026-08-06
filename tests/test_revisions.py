@@ -32,6 +32,26 @@ class FakeReviser:
         return Proposal()
 
 
+class _FenceOnlyReviser:
+    def __call__(self, **kwargs):
+        @dataclass
+        class Proposal:
+            revised_markdown: str = "```"
+            rationale: str = "r"
+
+        return Proposal()
+
+
+class _FencedReviser:
+    def __call__(self, **kwargs):
+        @dataclass
+        class Proposal:
+            revised_markdown: str = "```markdown\n# Morning catchup (revised)\n\nBetter steps.\n```"
+            rationale: str = "r"
+
+        return Proposal()
+
+
 @pytest.fixture
 def reviser() -> FakeReviser:
     return FakeReviser()
@@ -74,6 +94,26 @@ class TestServiceRevise:
     def test_revise_refuses_without_evidence(self, revising_service, request_fixture):
         with pytest.raises(NoEvidenceError):
             revising_service.revise(request_fixture)
+
+    def test_revise_refuses_a_fence_only_rewrite(
+        self, revising_service, fake_tapes, reviser, request_fixture
+    ):
+        from skills_evaluator.service import RevisionFailedError
+
+        seed_evidence(fake_tapes)
+        reviser.calls  # keep the fake; override its proposal content
+        revising_service.reviser = _FenceOnlyReviser()
+        with pytest.raises(RevisionFailedError):
+            revising_service.revise(request_fixture)
+
+    def test_revise_unwraps_fenced_documents(
+        self, revising_service, fake_tapes, request_fixture
+    ):
+        seed_evidence(fake_tapes)
+        revising_service.reviser = _FencedReviser()
+        record = revising_service.revise(request_fixture)
+        assert record.revised_skill_md.startswith("# Morning catchup")
+        assert "```" not in record.revised_skill_md
 
 
 class TestStoreLifecycle:
@@ -207,4 +247,4 @@ class TestRevisionEndpoints:
         ):
             assert path in document["paths"]
         tables = document["x-tapes-cassette"]["tables"]
-        assert tables == [{"name": "revisions"}]
+        assert {"name": "revisions"} in tables

@@ -43,6 +43,12 @@ prefix_path = "api"
 [[tables]]
 name = "revisions"
 
+# One current eval spec per skill: the skill's intrinsic, human-editable
+# metric. origin records whether a human has taken it over; edited specs
+# are never regenerated.
+[[tables]]
+name = "evals"
+
 # Configuration this cassette accepts, published as schema so a deployment
 # can render a form or validate values. Values arrive as CASSETTE_*
 # environment variables (dots become underscores:
@@ -69,6 +75,18 @@ default = 3
 min = 1
 max = 10
 description = "How many matched sessions feed the triage + judge pipeline."
+
+[[config]]
+key = "search_min_score"
+type = "string"
+default = "0.35"
+description = "Relevance gate: search hits scoring below this are noise, not evidence (0..1)."
+
+[[config]]
+key = "spec_autogenerate"
+type = "bool"
+default = true
+description = "Draft-and-store an eval spec inline when a skill has neither evidence nor a spec."
 
 [[config]]
 key = "llm.provider"

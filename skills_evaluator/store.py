@@ -19,6 +19,7 @@ rather than pretending durability it does not have.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -37,6 +38,12 @@ DECIDED_STATUSES = (ACCEPTED, REJECTED)
 
 class AlreadyDecidedError(Exception):
     """The revision already carries a different terminal status."""
+
+
+class EditedSpecError(Exception):
+    """Regeneration would overwrite a human-edited spec; refused. A human
+    edit is a statement about the metric, and the generator does not get to
+    argue with it."""
 
 
 @dataclass
@@ -60,6 +67,42 @@ class RevisionRecord:
         return asdict(self)
 
 
+ORIGIN_GENERATED = "generated"
+ORIGIN_EDITED = "edited"
+
+
+@dataclass
+class EvalRecord:
+    """One skill's eval spec — its intrinsic, human-editable metric.
+
+    ``skill_key`` is the lookup identity: the tapes skill id when the skill
+    is stored, otherwise the skill name (OpenClaw proposals have no tapes
+    id). One current spec per key; ``origin`` records whether a human has
+    taken it over.
+    """
+
+    id: str
+    skill_key: str
+    skill_id: str
+    skill_name: str
+    spec: dict[str, Any]
+    origin: str = ORIGIN_GENERATED
+    created_at: str = ""
+    updated_at: str = ""
+
+    @property
+    def spec_sha256(self) -> str:
+        return spec_sha(self.spec)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def spec_sha(spec: dict[str, Any]) -> str:
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 def new_revision_id() -> str:
     return str(uuid.uuid4())
 
@@ -81,15 +124,74 @@ class RevisionStore(Protocol):
 
     def list_for_skill(self, skill_id: str, limit: int) -> list[RevisionRecord]: ...
 
+    def upsert_eval(self, record: EvalRecord, force: bool) -> EvalRecord: ...
+
+    def get_eval(self, eval_id: str) -> EvalRecord | None: ...
+
+    def get_eval_for_key(self, skill_key: str) -> EvalRecord | None: ...
+
+    def update_eval_spec(
+        self, eval_id: str, spec: dict[str, Any]
+    ) -> EvalRecord | None: ...
+
+
+def _apply_eval_upsert(
+    existing: EvalRecord | None, record: EvalRecord, force: bool
+) -> EvalRecord | None:
+    """Shared upsert policy: no spec → insert; generated spec → replace only
+    with force; edited spec → never replaced by generation. Returns the
+    record to keep, or None when the existing one stands."""
+    if existing is None:
+        return record
+    if existing.origin == ORIGIN_EDITED:
+        raise EditedSpecError(
+            f"eval {existing.id} for {existing.skill_key!r} was human-edited; "
+            "update it with PUT, not regeneration"
+        )
+    if not force:
+        return None
+    record.id = existing.id
+    record.created_at = existing.created_at
+    return record
+
 
 class MemoryRevisionStore:
     """The no-database fallback."""
 
     def __init__(self) -> None:
         self._records: dict[str, RevisionRecord] = {}
+        self._evals: dict[str, EvalRecord] = {}
 
     def kind(self) -> str:
         return "memory"
+
+    def upsert_eval(self, record: EvalRecord, force: bool) -> EvalRecord:
+        existing = self.get_eval_for_key(record.skill_key)
+        kept = _apply_eval_upsert(existing, record, force)
+        if kept is None:
+            return existing  # type: ignore[return-value]
+        self._evals[kept.id] = kept
+        return kept
+
+    def get_eval(self, eval_id: str) -> EvalRecord | None:
+        return self._evals.get(eval_id)
+
+    def get_eval_for_key(self, skill_key: str) -> EvalRecord | None:
+        for record in self._evals.values():
+            if record.skill_key == skill_key:
+                return record
+        return None
+
+    def update_eval_spec(
+        self, eval_id: str, spec: dict[str, Any]
+    ) -> EvalRecord | None:
+        record = self._evals.get(eval_id)
+        if record is None:
+            return None
+        record.spec = spec
+        record.origin = ORIGIN_EDITED
+        record.updated_at = utcnow()
+        return record
 
     def insert(self, record: RevisionRecord) -> RevisionRecord:
         self._records[record.id] = record
@@ -167,6 +269,18 @@ class PostgresRevisionStore:
                 f'CREATE INDEX IF NOT EXISTS revisions_skill_idx '
                 f'ON "{SCHEMA}".revisions (skill_id, created_at DESC)'
             )
+            conn.execute(
+                f'''CREATE TABLE IF NOT EXISTS "{SCHEMA}".evals (
+                    id         UUID PRIMARY KEY,
+                    skill_key  TEXT NOT NULL UNIQUE,
+                    skill_id   TEXT NOT NULL DEFAULT '',
+                    skill_name TEXT NOT NULL DEFAULT '',
+                    spec       JSONB NOT NULL,
+                    origin     TEXT NOT NULL DEFAULT 'generated',
+                    created_at TIMESTAMPTZ NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL
+                )'''
+            )
 
     _COLUMNS = (
         "id, skill_id, ref, skill_name, original_skill_md, revised_skill_md, "
@@ -232,6 +346,66 @@ class PostgresRevisionStore:
             ).fetchall()
         return [_from_row(row) for row in rows]
 
+    _EVAL_COLUMNS = "id, skill_key, skill_id, skill_name, spec, origin, created_at, updated_at"
+
+    def upsert_eval(self, record: EvalRecord, force: bool) -> EvalRecord:
+        existing = self.get_eval_for_key(record.skill_key)
+        kept = _apply_eval_upsert(existing, record, force)
+        if kept is None:
+            return existing  # type: ignore[return-value]
+        with self._connect() as conn:
+            conn.execute(
+                f'INSERT INTO "{SCHEMA}".evals ({self._EVAL_COLUMNS}) '
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (skill_key) DO UPDATE SET "
+                "spec = EXCLUDED.spec, origin = EXCLUDED.origin, "
+                "skill_id = EXCLUDED.skill_id, skill_name = EXCLUDED.skill_name, "
+                "updated_at = EXCLUDED.updated_at",
+                (
+                    kept.id,
+                    kept.skill_key,
+                    kept.skill_id,
+                    kept.skill_name,
+                    json.dumps(kept.spec),
+                    kept.origin,
+                    kept.created_at,
+                    kept.updated_at,
+                ),
+            )
+        return kept
+
+    def get_eval(self, eval_id: str) -> EvalRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f'SELECT {self._EVAL_COLUMNS} FROM "{SCHEMA}".evals WHERE id = %s',
+                (eval_id,),
+            ).fetchone()
+        return _eval_from_row(row) if row else None
+
+    def get_eval_for_key(self, skill_key: str) -> EvalRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                f'SELECT {self._EVAL_COLUMNS} FROM "{SCHEMA}".evals WHERE skill_key = %s',
+                (skill_key,),
+            ).fetchone()
+        return _eval_from_row(row) if row else None
+
+    def update_eval_spec(
+        self, eval_id: str, spec: dict[str, Any]
+    ) -> EvalRecord | None:
+        record = self.get_eval(eval_id)
+        if record is None:
+            return None
+        updated_at = utcnow()
+        with self._connect() as conn:
+            conn.execute(
+                f'UPDATE "{SCHEMA}".evals '
+                "SET spec = %s, origin = %s, updated_at = %s WHERE id = %s",
+                (json.dumps(spec), ORIGIN_EDITED, updated_at, eval_id),
+            )
+        record.spec, record.origin, record.updated_at = spec, ORIGIN_EDITED, updated_at
+        return record
+
 
 def _from_row(row: tuple) -> RevisionRecord:
     return RevisionRecord(
@@ -249,6 +423,19 @@ def _from_row(row: tuple) -> RevisionRecord:
         decided_at=(
             row[11].isoformat() if hasattr(row[11], "isoformat") else row[11]
         ),
+    )
+
+
+def _eval_from_row(row: tuple) -> EvalRecord:
+    return EvalRecord(
+        id=str(row[0]),
+        skill_key=row[1],
+        skill_id=row[2],
+        skill_name=row[3],
+        spec=row[4],
+        origin=row[5],
+        created_at=row[6].isoformat() if hasattr(row[6], "isoformat") else str(row[6]),
+        updated_at=row[7].isoformat() if hasattr(row[7], "isoformat") else str(row[7]),
     )
 
 

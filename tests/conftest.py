@@ -63,6 +63,43 @@ class FakeModule:
         return self.prediction
 
 
+@dataclass
+class FakeSpecGenerator:
+    """Stands in for the DSPy EvalSpecGenerator module."""
+
+    calls: list[dict] = field(default_factory=list)
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        from skills_evaluator.pipeline import SpecCase, SpecCriterion
+
+        @dataclass
+        class Proposal:
+            criteria: list = field(
+                default_factory=lambda: [
+                    SpecCriterion(
+                        id="inputs-defined",
+                        kind="structure",
+                        description="The skill names the inputs it expects.",
+                        weight=3,
+                    ),
+                    SpecCriterion(
+                        id="steps-concrete",
+                        kind="content",
+                        description="Steps are imperative and concrete.",
+                        weight=2,
+                    ),
+                ]
+            )
+            cases: list = field(
+                default_factory=lambda: [
+                    SpecCase(scenario="typical run", expect=["follows every step"])
+                ]
+            )
+
+        return Proposal()
+
+
 @pytest.fixture
 def fake_tapes() -> FakeTapes:
     return FakeTapes()

@@ -88,13 +88,40 @@ The response carries `decision` (`pass`/`revise`), attributed `findings`, a
 evidence metrics including `provenance_sessions`. Passing `baseline` frames
 the evaluation as an update replacing it; there is no separate "kind" field.
 
+## 📏 Evals: the human-editable metric
+
+Behavioral evidence can't exist for a day-zero skill — a freshly workshopped
+proposal, a just-uploaded platform skill. **Eval specs** are the second
+axis: checkable criteria (and test cases) derived from the skill's own
+claims, stored in the cassette's `evals` table, and **human-editable**.
+
+- Search hits below `search_min_score` (default 0.35) are noise, not
+  evidence — they never reach the judge (`spans_gated` in metrics).
+- With no surviving evidence, the skill is judged against its spec —
+  `mode: "spec"`, every criterion checked one by one, score capped at 0.9
+  so behavioral evidence always outranks self-consistency. When no spec
+  exists yet, one is drafted and stored inline (`spec_autogenerate`).
+- `POST /evals` generates a spec explicitly; `PUT /evals/{id}` is the human
+  edit — `origin` flips to `edited` and generation can never overwrite it
+  (409). Editing the spec is editing the metric: the judge enforces *your*
+  criteria on the next evaluation, and revisions rewrite the skill to meet
+  them.
+
+```bash
+curl -s ".../v1/cassettes/skills-evaluator/evals?skill_name=haiku-writer" | jq .spec
+curl -s -X PUT .../v1/cassettes/skills-evaluator/evals/<id> \
+  -d '{"spec": {"criteria": [{"id": "syllable-form", "kind": "output-property",
+       "description": "Defines the 5-7-5 structure", "weight": 3}], "cases": []}}'
+```
+
 ## 🔁 Revisions: closing the loop
 
 Evaluation says *what's wrong*; revisions propose *the fix* and record what
 humans thought of it. `POST /revisions` (same body as `/evaluate`) runs the
 evaluation pipeline, then a `SkillRevisionProposal` DSPy step rewrites the
-skill so the findings are addressed — grounded only in the session evidence
-(409 when there is none: no ungrounded rewrites).
+skill so the findings are addressed — grounded in the session evidence
+and/or the eval criteria (409 only when neither exists: no ungrounded
+rewrites, and never evaluator meta-commentary inside the document).
 
 Each revision is stored `proposed` in the cassette's **own Postgres table**
 (`"skills-evaluator".revisions`, declared in the manifest, migrated at

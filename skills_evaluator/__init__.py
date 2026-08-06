@@ -20,7 +20,7 @@ def main() -> None:
     import uvicorn
 
     from .config import LLMUnconfiguredError, build_lm, load_settings
-    from .pipeline import SkillEvaluator, SkillReviser
+    from .pipeline import EvalSpecGenerator, SkillEvaluator, SkillReviser
     from .server import create_app
     from .service import EvaluationService, ServiceConfig
     from .store import open_store
@@ -47,10 +47,13 @@ def main() -> None:
             config=ServiceConfig(
                 top_k=settings.search_top_k,
                 max_sessions=settings.max_sessions,
+                min_search_score=settings.search_min_score,
+                spec_autogenerate=settings.spec_autogenerate,
                 judge_model=settings.judge_model_label,
             ),
             reviser=SkillReviser(),
             store=store,
+            spec_generator=EvalSpecGenerator(),
         )
         logger.info(
             "judge configured: %s; tapes at %s",

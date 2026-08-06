@@ -33,6 +33,8 @@ class Settings:
     tapes_base_url: str
     search_top_k: int
     max_sessions: int
+    search_min_score: float
+    spec_autogenerate: bool
     llm_provider: str
     llm_model: str
     llm_api_key: str
@@ -60,6 +62,8 @@ def load_settings() -> Settings:
         tapes_base_url=_env("CASSETTE_TAPES_BASE_URL", DEFAULT_TAPES_BASE_URL),
         search_top_k=_env_int("CASSETTE_SEARCH_TOP_K", 5),
         max_sessions=_env_int("CASSETTE_MAX_SESSIONS", 3),
+        search_min_score=_env_float("CASSETTE_SEARCH_MIN_SCORE", 0.35),
+        spec_autogenerate=_env_bool("CASSETTE_SPEC_AUTOGENERATE", True),
         llm_provider=_env("CASSETTE_LLM_PROVIDER", DEFAULT_PROVIDER).lower(),
         llm_model=_env("CASSETTE_LLM_MODEL", ""),
         llm_api_key=_env("CASSETTE_LLM_API_KEY", ""),
@@ -110,3 +114,21 @@ def _env_int(key: str, default: int) -> int:
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+def _env_float(key: str, default: float) -> float:
+    raw = os.environ.get(key, "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if 0.0 <= value <= 1.0 else default
+
+
+def _env_bool(key: str, default: bool) -> bool:
+    raw = os.environ.get(key, "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    return default

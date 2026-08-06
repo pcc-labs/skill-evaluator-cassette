@@ -90,7 +90,9 @@ class Metrics(BaseModel):
     sessions_considered: int = 0
     provenance_sessions: int = 0
     spans_matched: int = 0
+    spans_gated: int = 0
     mean_search_score: float = 0.0
+    spec_criteria: int = 0
     judge_model: str = ""
     transcript_chars: int = 0
 
@@ -114,6 +116,53 @@ class EvaluateResponse(BaseModel):
     score: float | None = None
     evaluator_version: str = ""
     mode: str = "llm"
+
+
+class EvalCriterion(BaseModel):
+    """One checkable expectation an eval spec holds a skill to."""
+
+    id: str
+    kind: str = "content"  # structure | content | output-property
+    description: str
+    weight: int = 1
+
+
+class EvalCase(BaseModel):
+    """One concrete scenario with the properties a skill-following agent's
+    output should satisfy."""
+
+    scenario: str
+    expect: list[str] = Field(default_factory=list)
+
+
+class EvalSpec(BaseModel):
+    """A skill's intrinsic metric: criteria (and optional cases) it can be
+    judged against with zero session history. Human-editable — editing the
+    spec is editing the metric."""
+
+    criteria: list[EvalCriterion] = Field(default_factory=list)
+    cases: list[EvalCase] = Field(default_factory=list)
+
+
+class EvalResponse(BaseModel):
+    """One stored eval spec and its provenance."""
+
+    id: str
+    skill_key: str = ""
+    skill_id: str = ""
+    skill_name: str = ""
+    origin: str = "generated"  # generated | edited
+    spec: EvalSpec = Field(default_factory=EvalSpec)
+    spec_sha256: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class EvalUpdateRequest(BaseModel):
+    """A human edit: the replacement spec. Origin flips to `edited` and the
+    spec is never silently regenerated afterwards."""
+
+    spec: EvalSpec
 
 
 class RevisionStatusRequest(BaseModel):
