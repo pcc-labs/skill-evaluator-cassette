@@ -4,22 +4,25 @@
 #   prove the edit is protected → revise against the edited criteria →
 #   accept the revision → prove labels never flip.
 #
-# Requires a UNIQUE skill name per run (specs are one-per-skill and human
-# edits are permanent by design), so pass one in:
+# Every request names a tapes skill row: the suite runner creates a fresh
+# one through POST /v1/skills first (specs are one-per-skill and human
+# edits are permanent by design, so a fresh row per run), then passes its
+# id in:
 #
 #   hurl \
 #     --variables-file vars.env \
-#     --variable skill=demo-$RANDOM lifecycle.hurl
+#     --variable skill_id=<uuid from POST /v1/skills> lifecycle.hurl
 #
-# Or use ./run.sh, which does it for you.
+# Or use ./run.sh, which creates the skill and does it for you.
 
-# 1. Day-zero evaluate: no captured session relates to this skill, so any
-#    weak search hits are gated, a spec is auto-generated and stored, and
-#    the judgment runs in spec mode with the score capped at 0.9.
+# 1. Day-zero evaluate: the row exists but no captured session relates to
+#    it, so any weak search hits are gated, a spec is auto-generated and
+#    stored, and the judgment runs in spec mode with the score capped at
+#    0.9. The inline candidate is the proposed document for the row.
 POST {{cassette_url}}/evaluate
 {
   "ref": {"source": "hurl", "id": "lifecycle-1"},
-  "skill": {"name": "{{skill}}", "description": "Shakespearean sonnet writer"},
+  "skill_id": "{{skill_id}}",
   "candidate": {"skill_md": "Write a Shakespearean sonnet about the given topic."}
 }
 HTTP 200
@@ -30,14 +33,15 @@ jsonpath "$.metrics.sessions_considered" == 0
 jsonpath "$.metrics.spec_criteria" >= 1
 jsonpath "$.evaluator_version" contains "dspy-rules"
 
-# 2. The generated spec is stored, keyed by the skill name.
-GET {{cassette_url}}/evals?skill_name={{skill}}
+# 2. The generated spec is stored, keyed by the skill id.
+GET {{cassette_url}}/evals?skill_id={{skill_id}}
 HTTP 200
 [Captures]
 eval_id: jsonpath "$.id"
 generated_sha: jsonpath "$.spec_sha256"
 [Asserts]
 jsonpath "$.origin" == "generated"
+jsonpath "$.skill_id" == "{{skill_id}}"
 jsonpath "$.spec.criteria" count >= 1
 
 # 3. The human edit: replace the criteria with our own. Origin flips to
@@ -67,8 +71,7 @@ jsonpath "$.spec_sha256" != "{{generated_sha}}"
 # 4. The edit is protected: regeneration refuses, even when forced.
 POST {{cassette_url}}/evals?force=true
 {
-  "skill": {"name": "{{skill}}"},
-  "candidate": {"skill_md": "Write a Shakespearean sonnet."}
+  "skill_id": "{{skill_id}}"
 }
 HTTP 409
 
@@ -78,7 +81,7 @@ HTTP 409
 POST {{cassette_url}}/revisions
 {
   "ref": {"source": "hurl", "id": "lifecycle-1"},
-  "skill": {"name": "{{skill}}", "description": "Shakespearean sonnet writer"},
+  "skill_id": "{{skill_id}}",
   "candidate": {"skill_md": "Write a Shakespearean sonnet about the given topic."}
 }
 HTTP 201
@@ -86,6 +89,7 @@ HTTP 201
 revision_id: jsonpath "$.id"
 [Asserts]
 jsonpath "$.status" == "proposed"
+jsonpath "$.skill_id" == "{{skill_id}}"
 jsonpath "$.evaluation.mode" == "spec"
 jsonpath "$.evaluation.findings" count >= 1
 jsonpath "$.revised_skill_md" != ""

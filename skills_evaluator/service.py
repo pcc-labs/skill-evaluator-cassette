@@ -21,7 +21,7 @@ from .store import (
     new_revision_id,
     utcnow,
 )
-from .tapes import SearchHit, SearchUnavailableError, TapesClient
+from .tapes import SearchHit, SearchUnavailableError, SkillRecord, TapesClient
 from .wire import (
     MAX_REASON_CHARS,
     MAX_SUMMARY_CHARS,
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 MAX_QUERIES = 3
 MAX_QUERY_CHARS = 200
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 
 class NoEvidenceError(Exception):
@@ -79,6 +79,8 @@ class ServiceConfig:
 class _Grounds:
     """What one evaluation stood on."""
 
+    skill: SkillRecord
+    markdown: str
     transcripts: list[tuple[str, str]]
     spec_text: str
     eval_record: EvalRecord | None
@@ -110,18 +112,19 @@ class EvaluationService:
     def _evaluate_full(
         self, request: EvaluateRequest
     ) -> tuple[EvaluateResponse, _Grounds]:
-        provenance_ids = self._resolve_skill(request)
+        skill, markdown = self._resolve_subject(request)
+        provenance_ids = skill.originating_session_ids
 
-        hits, gated_out, search_note = self._gather_hits(request)
+        hits, gated_out, search_note = self._gather_hits(skill, markdown)
         session_ids = merge_evidence_sessions(
             provenance_ids, hits, self.config.max_sessions
         )
         transcripts = self._build_transcripts(session_ids)
         loaded_ids = {sid for sid, _ in transcripts}
 
-        eval_record = self._resolve_spec(request, transcripts)
+        eval_record = self._resolve_spec(skill, markdown, transcripts)
         spec_text = render_spec(eval_record.spec) if eval_record else ""
-        grounds = _Grounds(transcripts, spec_text, eval_record)
+        grounds = _Grounds(skill, markdown, transcripts, spec_text, eval_record)
 
         metrics = Metrics(
             sessions_considered=len(transcripts),
@@ -145,8 +148,8 @@ class EvaluationService:
             )
 
         prediction = self.module(
-            skill_name=request.skill.name,
-            skill_markdown=request.candidate.skill_md,
+            skill_name=skill.name,
+            skill_markdown=markdown,
             baseline_markdown=request.baseline.skill_md if request.baseline else "",
             transcripts=transcripts,
             eval_spec=spec_text,
@@ -200,8 +203,8 @@ class EvaluationService:
 
         evidence = "\n---\n".join(text for _, text in grounds.transcripts)
         proposal = self.reviser(
-            skill_name=request.skill.name,
-            skill_markdown=request.candidate.skill_md,
+            skill_name=grounds.skill.name,
+            skill_markdown=grounds.markdown,
             findings=[
                 JudgeFinding(
                     rule_id=f.rule_id,
@@ -226,10 +229,10 @@ class EvaluationService:
 
         record = RevisionRecord(
             id=new_revision_id(),
-            skill_id=request.skill_id,
+            skill_id=grounds.skill.id,
             ref=request.ref.model_dump() if request.ref else None,
-            skill_name=request.skill.name,
-            original_skill_md=request.candidate.skill_md,
+            skill_name=grounds.skill.name,
+            original_skill_md=grounds.markdown,
             revised_skill_md=revised,
             rationale=str(proposal.rationale or "").strip()[: MAX_REASON_CHARS * 2],
             evaluation=response.model_dump(),
@@ -247,27 +250,27 @@ class EvaluationService:
         when one exists and force is off."""
         if self.spec_generator is None or self.store is None:
             raise RuntimeError("eval spec pipeline is not configured")
+        skill, markdown = self._resolve_subject(request)
+        return self._generate_eval(skill, markdown, force)
 
-        provenance_ids = self._resolve_skill(request)
-        skill_key = eval_skill_key(request)
-        if not skill_key:
-            raise ValueError("a skill_id or skill.name is required to key an eval spec")
-
-        existing = self.store.get_eval_for_key(skill_key)
+    def _generate_eval(
+        self, skill: SkillRecord, markdown: str, force: bool
+    ) -> EvalRecord:
+        existing = self.store.get_eval_for_skill(skill.id)
         if existing is not None and not force:
             return existing
 
-        hits, _, _ = self._gather_hits(request)
+        hits, _, _ = self._gather_hits(skill, markdown)
         session_ids = merge_evidence_sessions(
-            provenance_ids, hits, self.config.max_sessions
+            skill.originating_session_ids, hits, self.config.max_sessions
         )
         transcripts = self._build_transcripts(session_ids)
         evidence = "\n---\n".join(text for _, text in transcripts)
 
         proposal = self.spec_generator(
-            skill_name=request.skill.name,
-            skill_description=request.skill.description,
-            skill_markdown=request.candidate.skill_md,
+            skill_name=skill.name,
+            skill_description=skill.description,
+            skill_markdown=markdown,
             session_evidence=evidence,
         )
         spec = {
@@ -277,9 +280,8 @@ class EvaluationService:
         now = utcnow()
         record = EvalRecord(
             id=str(uuid.uuid4()),
-            skill_key=skill_key,
-            skill_id=request.skill_id,
-            skill_name=request.skill.name,
+            skill_id=skill.id,
+            skill_name=skill.name,
             spec=spec,
             created_at=now,
             updated_at=now,
@@ -287,7 +289,10 @@ class EvaluationService:
         return self.store.upsert_eval(record, force)
 
     def _resolve_spec(
-        self, request: EvaluateRequest, transcripts: list[tuple[str, str]]
+        self,
+        skill: SkillRecord,
+        markdown: str,
+        transcripts: list[tuple[str, str]],
     ) -> EvalRecord | None:
         """Finds the skill's stored spec; when there is none AND no session
         evidence, optionally drafts one inline so a day-zero skill still
@@ -295,10 +300,7 @@ class EvaluationService:
         no-evidence path rather than failing the evaluation."""
         if self.store is None:
             return None
-        skill_key = eval_skill_key(request)
-        if not skill_key:
-            return None
-        record = self.store.get_eval_for_key(skill_key)
+        record = self.store.get_eval_for_skill(skill.id)
         if record is not None:
             return record
         if transcripts or not self.config.spec_autogenerate:
@@ -306,38 +308,36 @@ class EvaluationService:
         if self.spec_generator is None:
             return None
         try:
-            return self.generate_eval(request, force=False)
+            return self._generate_eval(skill, markdown, force=False)
         except Exception:  # noqa: BLE001 - degrade, never fail the evaluation
-            logger.exception("inline spec generation failed for %s", skill_key)
+            logger.exception("inline spec generation failed for %s", skill.id)
             return None
 
     # ------------------------------------------------------------------
     # Evidence plumbing
 
-    def _resolve_skill(self, request: EvaluateRequest) -> list[str]:
-        """Fills the candidate from tapes when the caller sent a skill_id
-        instead of inline content, and returns the skill's provenance
-        session ids — the sessions it was generated from, which outrank
-        anything search can find."""
-        if not request.skill_id:
-            return []
-        record = self.tapes.get_skill(request.skill_id)
-        if not request.candidate.skill_md.strip():
-            request.candidate.skill_md = record.content
-        if not request.skill.name:
-            request.skill.name = record.name
-        if not request.skill.description:
-            request.skill.description = record.description
-        return record.originating_session_ids
+    def _resolve_subject(self, request: EvaluateRequest) -> tuple[SkillRecord, str]:
+        """Resolves the skill row every request is anchored on and picks the
+        document under judgment: the inline candidate when one was sent (a
+        proposal replacing the stored content), otherwise the stored content
+        itself. The row's provenance sessions — the sessions the skill was
+        generated from — outrank anything search can find."""
+        skill = self.tapes.get_skill(request.skill_id.strip())
+        markdown = (
+            request.candidate.skill_md
+            if request.candidate.skill_md.strip()
+            else skill.content
+        )
+        return skill, markdown
 
     def _gather_hits(
-        self, request: EvaluateRequest
+        self, skill: SkillRecord, markdown: str
     ) -> tuple[list[SearchHit], int, str]:
         """Runs every derived query through span search and drops hits below
         the relevance gate — weak similarity is noise, not evidence. Returns
         (surviving hits, gated-out count, degradation note)."""
         raw: list[SearchHit] = []
-        for query in build_queries(request):
+        for query in build_queries(skill, markdown):
             try:
                 raw.extend(self.tapes.search_spans(query, self.config.top_k))
             except SearchUnavailableError:
@@ -411,13 +411,6 @@ def _strip_fences(text: str) -> str:
     return stripped
 
 
-def eval_skill_key(request: EvaluateRequest) -> str:
-    """The identity an eval spec is stored under: the tapes skill id when
-    the skill is stored, otherwise the skill name (an OpenClaw proposal has
-    no tapes id, but its name is its workshop identity)."""
-    return request.skill_id.strip() or request.skill.name.strip()
-
-
 def render_spec(spec: dict) -> str:
     """Renders a stored spec for a prompt: one criterion per line with kind
     and weight, then the cases."""
@@ -433,10 +426,10 @@ def render_spec(spec: dict) -> str:
     return "\n".join(lines)
 
 
-def build_queries(request: EvaluateRequest) -> list[str]:
+def build_queries(skill: SkillRecord, markdown: str) -> list[str]:
     """Derives the span-search queries from the skill: its own
-    name/description first, then its leading section headings — the terms an
-    agent doing this work would have used."""
+    name/description first, then the judged document's leading section
+    headings — the terms an agent doing this work would have used."""
     queries: list[str] = []
 
     def add(query: str) -> None:
@@ -444,13 +437,11 @@ def build_queries(request: EvaluateRequest) -> list[str]:
         if query and query not in queries:
             queries.append(query)
 
-    add(f"{request.skill.name} {request.skill.description}".strip())
-    for heading in _leading_headings(
-        request.candidate.skill_md, MAX_QUERIES - len(queries)
-    ):
-        add(f"{request.skill.name} {heading}")
+    add(f"{skill.name} {skill.description}".strip())
+    for heading in _leading_headings(markdown, MAX_QUERIES - len(queries)):
+        add(f"{skill.name} {heading}")
     if not queries:
-        add(request.skill.name)
+        add(skill.name)
     return queries
 
 

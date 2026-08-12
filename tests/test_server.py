@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import seed_morning_skill
 from skills_evaluator.server import create_app, load_manifest
 
 
@@ -39,13 +40,19 @@ def test_openapi_embeds_manifest_and_declares_prefixed_path(client):
     assert "EvaluateRequest" in document["components"]["schemas"]
 
 
-def test_evaluate_requires_skill_md_or_skill_id(client):
+def test_evaluate_requires_skill_id(client):
     response = client.post(
         "/api/skills-evaluator/evaluate",
-        json={"skill": {"name": "n"}, "candidate": {"skill_md": "  "}},
+        json={"skill_id": "  ", "candidate": {"skill_md": "# s"}},
     )
     assert response.status_code == 400
     assert "skill_id" in response.json()["detail"]
+
+    response = client.post(
+        "/api/skills-evaluator/evaluate",
+        json={"candidate": {"skill_md": "# s"}},
+    )
+    assert response.status_code == 400
 
 
 def test_unknown_skill_id_is_404(client):
@@ -56,14 +63,10 @@ def test_unknown_skill_id_is_404(client):
 
 
 def test_evaluate_returns_judgment(client, fake_tapes):
-    fake_tapes.hits["n "] = []
+    skill_id = seed_morning_skill(fake_tapes)
     response = client.post(
         "/api/skills-evaluator/evaluate",
-        json={
-            "proposal": {"id": "p1", "kind": "create"},
-            "skill": {"name": "n"},
-            "candidate": {"skill_md": "# skill"},
-        },
+        json={"skill_id": skill_id, "candidate": {"skill_md": "# skill"}},
     )
     assert response.status_code == 200
     body = response.json()
@@ -75,18 +78,17 @@ def test_evaluate_returns_judgment(client, fake_tapes):
 def test_unconfigured_llm_reports_503():
     client = TestClient(create_app(None, "no API key for provider 'anthropic'"))
     response = client.post(
-        "/api/skills-evaluator/evaluate",
-        json={"skill": {"name": "n"}, "candidate": {"skill_md": "# s"}},
+        "/api/skills-evaluator/evaluate", json={"skill_id": "sk-1"}
     )
     assert response.status_code == 503
     assert "no API key" in response.json()["detail"]
 
 
 def test_service_failure_is_502(client, fake_tapes):
+    skill_id = seed_morning_skill(fake_tapes)
     fake_tapes.search_error = ConnectionError("refused")
     response = client.post(
-        "/api/skills-evaluator/evaluate",
-        json={"skill": {"name": "n"}, "candidate": {"skill_md": "# s"}},
+        "/api/skills-evaluator/evaluate", json={"skill_id": skill_id}
     )
     assert response.status_code == 502
     assert "evaluation failed" in response.json()["detail"]

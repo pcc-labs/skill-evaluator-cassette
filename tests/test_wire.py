@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from skills_evaluator.wire import (
     MAX_FINDINGS,
     MAX_MESSAGE_CHARS,
@@ -15,11 +18,12 @@ from skills_evaluator.wire import (
 def test_request_parses_snake_case():
     request = EvaluateRequest.model_validate_json(
         b'{"ref": {"source": "openclaw", "id": "p1", "revision_sha256": "abc"},'
-        b' "skill": {"name": "n", "description": "d"},'
+        b' "skill_id": "sk-1",'
         b' "candidate": {"skill_md": "# s", "files": [{"path": "a.md", "content": "x"}]},'
         b' "baseline": {"skill_md": "# old"}}'
     )
     assert request.ref is not None and request.ref.revision_sha256 == "abc"
+    assert request.skill_id == "sk-1"
     assert request.candidate.files[0].path == "a.md"
     assert request.baseline is not None and request.baseline.skill_md == "# old"
 
@@ -28,6 +32,11 @@ def test_request_accepts_skill_id_alone():
     request = EvaluateRequest.model_validate_json(b'{"skill_id": "sk-1"}')
     assert request.skill_id == "sk-1"
     assert request.candidate.skill_md == ""
+
+
+def test_request_requires_skill_id():
+    with pytest.raises(ValidationError):
+        EvaluateRequest.model_validate_json(b'{"candidate": {"skill_md": "# s"}}')
 
 
 def test_response_serializes_snake_case():

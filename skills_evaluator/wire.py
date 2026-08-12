@@ -1,11 +1,17 @@
 """The wire contract of POST /evaluate.
 
-The contract is host-neutral: a skill document (inline, or resolved from
-tapes by ``skill_id``), optional baseline it would replace, and optional
-opaque ``ref`` correlation metadata the caller gets echoed back. Hosts
-conform to this shape through thin adapters — the OpenClaw Gateway plugin
-maps its ``skill_proposal_evaluate`` hook event here; platform callers can
-POST a ``skill_id`` directly.
+The contract is host-neutral and anchored on the tapes skills table: every
+request names a stored skill row by ``skill_id`` — identity, provenance,
+and history all hang off that row. The optional ``candidate`` bundle is the
+*proposed* document for that row (a workshop draft, an edit under review);
+when absent, the stored content itself is judged. ``baseline`` frames the
+evaluation as an update replacing it, and ``ref`` is opaque correlation
+metadata echoed back verbatim.
+
+Hosts conform through thin adapters. Paper platform callers already hold a
+skill_id. The OpenClaw Gateway plugin evaluates greenfield workshop
+proposals with no tapes row yet — so it creates one first through the
+ordinary skills API (``POST /v1/skills``) and evaluates against that id.
 
 Field names are snake_case like the rest of the tapes surface. Every
 response field is bounded: the caps happen to sit inside OpenClaw's
@@ -36,13 +42,6 @@ class Ref(BaseModel):
     revision_sha256: str = ""
 
 
-class SkillRef(BaseModel):
-    """The skill under evaluation."""
-
-    name: str = ""
-    description: str = ""
-
-
 class BundleFile(BaseModel):
     """One support file in a skill bundle."""
 
@@ -60,16 +59,16 @@ class Bundle(BaseModel):
 class EvaluateRequest(BaseModel):
     """One skill to judge against captured sessions.
 
-    The document arrives one of two ways: inline in ``candidate``, or by
-    ``skill_id`` — a tapes skill the cassette resolves itself, gaining the
-    skill's provenance sessions as seed evidence. When ``baseline`` is
-    present the evaluation is framed as an update replacing it; there is no
-    separate "kind" field.
+    ``skill_id`` is required: the tapes skill row is the unit of identity,
+    and the cassette resolves it itself — name, description, content, and
+    the provenance sessions that seed the evidence. ``candidate`` optionally
+    carries the proposed document replacing the stored content (a workshop
+    draft under review); when ``baseline`` is present the evaluation is
+    framed as an update replacing it. There is no separate "kind" field.
     """
 
     ref: Ref | None = None
-    skill: SkillRef = Field(default_factory=SkillRef)
-    skill_id: str = ""
+    skill_id: str
     candidate: Bundle = Field(default_factory=Bundle)
     baseline: Bundle | None = None
 
@@ -148,7 +147,6 @@ class EvalResponse(BaseModel):
     """One stored eval spec and its provenance."""
 
     id: str
-    skill_key: str = ""
     skill_id: str = ""
     skill_name: str = ""
     origin: str = "generated"  # generated | edited

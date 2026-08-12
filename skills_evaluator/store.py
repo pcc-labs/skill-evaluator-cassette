@@ -3,11 +3,14 @@
 Every proposed revision is stored with the evaluation that motivated it and,
 once a host reports back through the status hook, the human verdict:
 ``accepted`` or ``rejected``. That triple — (skill + evidence, proposed
-revision, verdict) — is exactly the labeled trainset a GEPA optimizer needs,
-and the ``skill_id`` column is the loose link back to tapes' skills table so
-a skill's whole revision history hangs together. Loose on purpose: a
-cassette owns tables only in its own schema and never foreign-keys into
-core's.
+revision, verdict) — is exactly the labeled trainset a GEPA optimizer needs.
+
+``skill_id`` is the identity every row hangs off: a required reference to a
+row in tapes' skills table (the server refuses requests without one, and
+resolves the id against tapes before anything is stored). The reference is
+deliberately not a SQL FOREIGN KEY — a cassette owns tables only in its own
+schema and never foreign-keys into core's — but it is required and verified,
+so a skill's evals and whole revision history join sanely on one key.
 
 Two implementations, per the cassette convention: Postgres when the
 deployment supplies ``TAPES_DATABASE_URL`` (the cassette runs its own
@@ -75,14 +78,13 @@ ORIGIN_EDITED = "edited"
 class EvalRecord:
     """One skill's eval spec — its intrinsic, human-editable metric.
 
-    ``skill_key`` is the lookup identity: the tapes skill id when the skill
-    is stored, otherwise the skill name (OpenClaw proposals have no tapes
-    id). One current spec per key; ``origin`` records whether a human has
-    taken it over.
+    ``skill_id`` is the lookup identity: the tapes skills-table row this
+    spec belongs to. One current spec per skill; ``origin`` records whether
+    a human has taken it over. ``skill_name`` is a denormalized label for
+    display, never a key.
     """
 
     id: str
-    skill_key: str
     skill_id: str
     skill_name: str
     spec: dict[str, Any]
@@ -128,7 +130,7 @@ class RevisionStore(Protocol):
 
     def get_eval(self, eval_id: str) -> EvalRecord | None: ...
 
-    def get_eval_for_key(self, skill_key: str) -> EvalRecord | None: ...
+    def get_eval_for_skill(self, skill_id: str) -> EvalRecord | None: ...
 
     def update_eval_spec(
         self, eval_id: str, spec: dict[str, Any]
@@ -145,7 +147,7 @@ def _apply_eval_upsert(
         return record
     if existing.origin == ORIGIN_EDITED:
         raise EditedSpecError(
-            f"eval {existing.id} for {existing.skill_key!r} was human-edited; "
+            f"eval {existing.id} for skill {existing.skill_id!r} was human-edited; "
             "update it with PUT, not regeneration"
         )
     if not force:
@@ -166,7 +168,7 @@ class MemoryRevisionStore:
         return "memory"
 
     def upsert_eval(self, record: EvalRecord, force: bool) -> EvalRecord:
-        existing = self.get_eval_for_key(record.skill_key)
+        existing = self.get_eval_for_skill(record.skill_id)
         kept = _apply_eval_upsert(existing, record, force)
         if kept is None:
             return existing  # type: ignore[return-value]
@@ -176,9 +178,9 @@ class MemoryRevisionStore:
     def get_eval(self, eval_id: str) -> EvalRecord | None:
         return self._evals.get(eval_id)
 
-    def get_eval_for_key(self, skill_key: str) -> EvalRecord | None:
+    def get_eval_for_skill(self, skill_id: str) -> EvalRecord | None:
         for record in self._evals.values():
-            if record.skill_key == skill_key:
+            if record.skill_id == skill_id:
                 return record
         return None
 
@@ -272,8 +274,7 @@ class PostgresRevisionStore:
             conn.execute(
                 f'''CREATE TABLE IF NOT EXISTS "{SCHEMA}".evals (
                     id         UUID PRIMARY KEY,
-                    skill_key  TEXT NOT NULL UNIQUE,
-                    skill_id   TEXT NOT NULL DEFAULT '',
+                    skill_id   TEXT NOT NULL UNIQUE,
                     skill_name TEXT NOT NULL DEFAULT '',
                     spec       JSONB NOT NULL,
                     origin     TEXT NOT NULL DEFAULT 'generated',
@@ -346,24 +347,23 @@ class PostgresRevisionStore:
             ).fetchall()
         return [_from_row(row) for row in rows]
 
-    _EVAL_COLUMNS = "id, skill_key, skill_id, skill_name, spec, origin, created_at, updated_at"
+    _EVAL_COLUMNS = "id, skill_id, skill_name, spec, origin, created_at, updated_at"
 
     def upsert_eval(self, record: EvalRecord, force: bool) -> EvalRecord:
-        existing = self.get_eval_for_key(record.skill_key)
+        existing = self.get_eval_for_skill(record.skill_id)
         kept = _apply_eval_upsert(existing, record, force)
         if kept is None:
             return existing  # type: ignore[return-value]
         with self._connect() as conn:
             conn.execute(
                 f'INSERT INTO "{SCHEMA}".evals ({self._EVAL_COLUMNS}) '
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
-                "ON CONFLICT (skill_key) DO UPDATE SET "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (skill_id) DO UPDATE SET "
                 "spec = EXCLUDED.spec, origin = EXCLUDED.origin, "
-                "skill_id = EXCLUDED.skill_id, skill_name = EXCLUDED.skill_name, "
+                "skill_name = EXCLUDED.skill_name, "
                 "updated_at = EXCLUDED.updated_at",
                 (
                     kept.id,
-                    kept.skill_key,
                     kept.skill_id,
                     kept.skill_name,
                     json.dumps(kept.spec),
@@ -382,11 +382,11 @@ class PostgresRevisionStore:
             ).fetchone()
         return _eval_from_row(row) if row else None
 
-    def get_eval_for_key(self, skill_key: str) -> EvalRecord | None:
+    def get_eval_for_skill(self, skill_id: str) -> EvalRecord | None:
         with self._connect() as conn:
             row = conn.execute(
-                f'SELECT {self._EVAL_COLUMNS} FROM "{SCHEMA}".evals WHERE skill_key = %s',
-                (skill_key,),
+                f'SELECT {self._EVAL_COLUMNS} FROM "{SCHEMA}".evals WHERE skill_id = %s',
+                (skill_id,),
             ).fetchone()
         return _eval_from_row(row) if row else None
 
@@ -429,13 +429,12 @@ def _from_row(row: tuple) -> RevisionRecord:
 def _eval_from_row(row: tuple) -> EvalRecord:
     return EvalRecord(
         id=str(row[0]),
-        skill_key=row[1],
-        skill_id=row[2],
-        skill_name=row[3],
-        spec=row[4],
-        origin=row[5],
-        created_at=row[6].isoformat() if hasattr(row[6], "isoformat") else str(row[6]),
-        updated_at=row[7].isoformat() if hasattr(row[7], "isoformat") else str(row[7]),
+        skill_id=row[1],
+        skill_name=row[2],
+        spec=row[3],
+        origin=row[4],
+        created_at=row[5].isoformat() if hasattr(row[5], "isoformat") else str(row[5]),
+        updated_at=row[6].isoformat() if hasattr(row[6], "isoformat") else str(row[6]),
     )
 
 

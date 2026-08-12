@@ -6,21 +6,22 @@
 # tomllib) and embeds it verbatim in the OpenAPI document, so the authored
 # manifest and the served manifest are the same bytes by construction.
 #
-# The cassette owns no tables and reads no contract views: session evidence
-# comes through tapes core's own HTTP surface (/v1/search/spans, /v1/traces).
-# What it needs is an LLM credential for the DSPy judge — without one it
-# starts, answers discovery, and reports 503 from /evaluate.
+# The cassette reads no contract views: the skills table (every request
+# names a skill row by required skill_id) and session evidence both come
+# through tapes core's own HTTP surface (/v1/skills, /v1/search/spans,
+# /v1/traces). What it needs is an LLM credential for the DSPy judge —
+# without one it starts, answers discovery, and reports 503 from /evaluate.
 
 kind = "cassette/v1alpha1"
 
 [cassette]
 name = "skills-evaluator"
-version = "0.2.0"
+version = "0.3.0"
 display_name = "Skills Evaluator"
 description = "Evaluates skill documents against captured tapes sessions with a DSPy pipeline."
 license = "Apache-2.0"
 homepage = "https://github.com/papercomputeco/skills-evaluator"
-image = "tapes/skills-evaluator-cassette:0.2.0"
+image = "tapes/skills-evaluator-cassette:0.3.0"
 port = 9978
 
 [depends]
@@ -36,14 +37,15 @@ prefix_path = "api"
 # declaration is for whoever provisions the database — core neither creates
 # the schema nor grants access to it. The cassette runs its own migration at
 # startup when the deployment supplies TAPES_DATABASE_URL; without one,
-# revisions fall back to an in-memory store. The revisions table is the
-# accept/reject corpus: each row links a proposed rewrite (and the
-# evaluation that motivated it) to a tapes skill id and, once a host reports
-# back, the human verdict.
+# revisions fall back to an in-memory store. Both tables key on the
+# required skill_id — a verified (but not SQL-enforced) reference to a row
+# in tapes' skills table. The revisions table is the accept/reject corpus:
+# each row links a proposed rewrite (and the evaluation that motivated it)
+# to its skill row and, once a host reports back, the human verdict.
 [[tables]]
 name = "revisions"
 
-# One current eval spec per skill: the skill's intrinsic, human-editable
+# One current eval spec per skill id: the skill's intrinsic, human-editable
 # metric. origin records whether a human has taken it over; edited specs
 # are never regenerated.
 [[tables]]

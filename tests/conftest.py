@@ -7,7 +7,26 @@ import pytest
 from skills_evaluator.pipeline import JudgeFinding
 from skills_evaluator.service import EvaluationService, ServiceConfig
 from skills_evaluator.tapes import SearchHit, SkillNotFoundError, SkillRecord
-from skills_evaluator.wire import Bundle, EvaluateRequest, Ref, SkillRef
+from skills_evaluator.wire import Bundle, EvaluateRequest, Ref
+
+MORNING_SKILL_ID = "sk-morning"
+MORNING_SKILL_MD = (
+    "# Morning catchup\n\n## Triage inbox\n\nSteps.\n\n"
+    "## Draft replies\n\nMore steps."
+)
+
+
+def seed_morning_skill(fake_tapes: "FakeTapes") -> str:
+    """Seeds the canonical test skill row. Every request names a stored
+    skill now, so tests seed the row the way the plugin would have created
+    it (POST /v1/skills) before evaluating."""
+    fake_tapes.skills[MORNING_SKILL_ID] = SkillRecord(
+        id=MORNING_SKILL_ID,
+        name="morning-catchup",
+        description="Daily inbox triage",
+        content=MORNING_SKILL_MD,
+    )
+    return MORNING_SKILL_ID
 
 
 @dataclass
@@ -134,14 +153,9 @@ def service(fake_tapes: FakeTapes, fake_module: FakeModule) -> EvaluationService
 
 
 @pytest.fixture
-def request_fixture() -> EvaluateRequest:
+def request_fixture(fake_tapes: FakeTapes) -> EvaluateRequest:
     return EvaluateRequest(
         ref=Ref(source="test", id="prop-1", revision="v1"),
-        skill=SkillRef(name="morning-catchup", description="Daily inbox triage"),
-        candidate=Bundle(
-            skill_md=(
-                "# Morning catchup\n\n## Triage inbox\n\nSteps.\n\n"
-                "## Draft replies\n\nMore steps."
-            )
-        ),
+        skill_id=seed_morning_skill(fake_tapes),
+        candidate=Bundle(skill_md=MORNING_SKILL_MD),
     )

@@ -10,7 +10,7 @@ from skills_evaluator.tapes import (
     SkillNotFoundError,
     SkillRecord,
 )
-from skills_evaluator.wire import Bundle, EvaluateRequest, SkillRef
+from skills_evaluator.wire import Bundle, EvaluateRequest
 
 
 def hit(session_id: str, score: float) -> SearchHit:
@@ -27,18 +27,13 @@ class TestQueryDerivation:
         ]
 
     def test_caps_and_fallback(self):
-        request = EvaluateRequest(
-            skill=SkillRef(name="x", description="very long " * 50),
-            candidate=Bundle(skill_md="## One\n## Two\n## Three\n## Four\n"),
-        )
-        queries = build_queries(request)
+        skill = SkillRecord(id="sk-x", name="x", description="very long " * 50, content="")
+        queries = build_queries(skill, "## One\n## Two\n## Three\n## Four\n")
         assert len(queries) <= 3
         assert all(len(q) <= 200 for q in queries)
 
-        bare = EvaluateRequest(
-            skill=SkillRef(name="solo"), candidate=Bundle(skill_md="no headings")
-        )
-        assert build_queries(bare) == ["solo"]
+        bare = SkillRecord(id="sk-solo", name="solo", description="", content="")
+        assert build_queries(bare, "no headings") == ["solo"]
 
 
 class TestWithEvidence:

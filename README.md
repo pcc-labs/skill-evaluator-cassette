@@ -1,27 +1,33 @@
 # 🍳 skills-evaluator-cassette
 
-An agnostic [tapes cassette](https://github.com/papercomputeco/tapes) that evaluates provided
-skill documents against real captured session data, built on
+An agnostic [tapes cassette](https://github.com/papercomputeco/tapes) that evaluates skill
+documents against real captured session data, built on
 [DSPy GEPA optimizers](https://dspy.ai/getting-started/gepa-optimization/).
 
 ---
 
 ## 🧪 How it works
 
-`POST /evaluate` takes a skill (inline
-markdown, or a tapes `skill_id` the cassette resolves itself), an optional
-baseline it would replace, and opaque `ref` correlation metadata echoed back
-in the response.
+The tapes **skills table is the unit of identity**: every API takes a
+required `skill_id` naming a skill row, and evals and revisions join back
+to that row on one key. `POST /evaluate` takes the `skill_id`, an optional
+inline `candidate` bundle (the *proposed* document replacing the stored
+content — when absent, the stored content itself is judged), an optional
+`baseline` it would replace, and opaque `ref` correlation metadata echoed
+back in the response.
 
 Hosts conform through thin adapters — OpenClaw's
 [Skill Workshop](https://docs.openclaw.ai/tools/skill-workshop) plugs in via
-the `openclaw-tapes` Openclaw Gateway plugin. Paper platform callers (console, CLI, a
-generation-time quality gate) can POST a `skill_id` directly.
+the `openclaw-tapes` OpenClaw Gateway plugin, which **creates a skill row
+first** (through the ordinary `POST /v1/skills` API) when a greenfield
+workshop proposal has no tapes id yet, then evaluates against that id.
+Paper platform callers (console, CLI, a generation-time quality gate)
+already hold a `skill_id` and POST it directly.
 
 The cassette grounds the judgment in tapes telemetry through a
 two-stage DSPy pipeline:
 
-1. **Evidence selection** — a skill resolved by `skill_id` brings its
+1. **Evidence selection** — the resolved skill row brings its
    **provenance** (`originatingSessionIds`, the sessions it was generated
    from), which outranks anything search can find; span search
    (`GET /v1/search/spans`) over the skill's name, description, and headings
@@ -67,20 +73,21 @@ LLM credential the cassette still starts and answers discovery; `/evaluate`
 reports 503.
 
 ```bash
-# Inline document (what the OpenClaw plugin sends):
-curl -s -X POST http://127.0.0.1:8081/v1/cassettes/skills-evaluator/evaluate \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "ref": {"source": "openclaw", "id": "prop-1"},
-    "skill": {"name": "morning-catchup", "description": "Daily inbox triage"},
-    "candidate": {"skill_md": "# Morning catchup\n\n## Triage inbox\n\n1. ..."}
-  }' | jq
-
-# A platform skill by id — resolved from tapes, judged against its
+# A stored skill by id — resolved from tapes, judged against its
 # provenance sessions first:
 curl -s -X POST http://127.0.0.1:8081/v1/cassettes/skills-evaluator/evaluate \
   -H 'Content-Type: application/json' \
   -d '{"skill_id": "<uuid from GET /v1/skills>"}' | jq '{decision, score, metrics}'
+
+# A proposal for that row (what the OpenClaw plugin sends — for a
+# greenfield workshop skill it creates the row first via POST /v1/skills):
+curl -s -X POST http://127.0.0.1:8081/v1/cassettes/skills-evaluator/evaluate \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "ref": {"source": "openclaw", "id": "prop-1"},
+    "skill_id": "<uuid>",
+    "candidate": {"skill_md": "# Morning catchup\n\n## Triage inbox\n\n1. ..."}
+  }' | jq
 ```
 
 The response carries `decision` (`pass`/`revise`), attributed `findings`, a
@@ -108,7 +115,7 @@ claims, stored in the cassette's `evals` table, and **human-editable**.
   them.
 
 ```bash
-curl -s ".../v1/cassettes/skills-evaluator/evals?skill_name=haiku-writer" | jq .spec
+curl -s ".../v1/cassettes/skills-evaluator/evals?skill_id=<uuid>" | jq .spec
 curl -s -X PUT .../v1/cassettes/skills-evaluator/evals/<id> \
   -d '{"spec": {"criteria": [{"id": "syllable-form", "kind": "output-property",
        "description": "Defines the 5-7-5 structure", "weight": 3}], "cases": []}}'
@@ -125,9 +132,11 @@ rewrites, and never evaluator meta-commentary inside the document).
 
 Each revision is stored `proposed` in the cassette's **own Postgres table**
 (`"skills-evaluator".revisions`, declared in the manifest, migrated at
-startup when `TAPES_DATABASE_URL` is set; memory-only otherwise) with a
-loose `skill_id` link back to the tapes skills table, so a skill's whole
-revision history hangs together.
+startup when `TAPES_DATABASE_URL` is set; memory-only otherwise), keyed by
+the required `skill_id` back to the tapes skills table, so a skill's whole
+revision history hangs together on one key. (The reference is verified
+against tapes on write, but deliberately not a SQL FOREIGN KEY — a cassette
+owns tables only in its own schema and never foreign-keys into core's.)
 
 Hosts report the human verdict through the status hook:
 
@@ -163,8 +172,8 @@ models.
 
 ## Where DSPy takes this next
 
-The pipeline is deliberately shaped as a DSPy *program* so the optimizer
-story from the exploration notes plugs in without restructuring:
+The pipeline is deliberately shaped as a DSPy *program* so an optimizer
+plugs in without restructuring:
 
 - **GEPA over the skill itself** — the pieces now exist end to end: the
   triage stage produces the labeled failure evidence a feedback function

@@ -3,23 +3,34 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.conftest import FakeSpecGenerator
+from tests.conftest import FakeSpecGenerator, FakeTapes
 from skills_evaluator.server import create_app
 from skills_evaluator.service import render_spec
 from skills_evaluator.store import EditedSpecError, MemoryRevisionStore
-from skills_evaluator.tapes import SearchHit
-from skills_evaluator.wire import Bundle, EvaluateRequest, SkillRef
+from skills_evaluator.tapes import SearchHit, SkillRecord
+from skills_evaluator.wire import EvaluateRequest
+
+HAIKU_SKILL_ID = "sk-haiku"
+
+
+def seed_haiku_skill(fake_tapes: FakeTapes) -> str:
+    fake_tapes.skills[HAIKU_SKILL_ID] = SkillRecord(
+        id=HAIKU_SKILL_ID,
+        name="haiku-writer",
+        description="Haiku writer skill",
+        content="Write a classical haiku given the provided inputs.",
+    )
+    return HAIKU_SKILL_ID
 
 
 def haiku_request() -> EvaluateRequest:
-    return EvaluateRequest(
-        skill=SkillRef(name="haiku-writer", description="Haiku writer skill"),
-        candidate=Bundle(skill_md="Write a classical haiku given the provided inputs."),
-    )
+    # No inline candidate: the stored content itself is judged.
+    return EvaluateRequest(skill_id=HAIKU_SKILL_ID)
 
 
 @pytest.fixture
-def spec_service(service, fake_module):
+def spec_service(service, fake_module, fake_tapes):
+    seed_haiku_skill(fake_tapes)
     service.store = MemoryRevisionStore()
     service.spec_generator = FakeSpecGenerator()
     return service
@@ -63,8 +74,8 @@ class TestSpecMode:
         # The module saw the rendered criteria, not empty evidence framing.
         assert "inputs-defined" in fake_module.calls[0]["eval_spec"]
         assert fake_module.calls[0]["transcripts"] == []
-        # The generated spec was stored, keyed by skill name (no skill_id).
-        stored = spec_service.store.get_eval_for_key("haiku-writer")
+        # The generated spec was stored, keyed by the tapes skill id.
+        stored = spec_service.store.get_eval_for_skill(HAIKU_SKILL_ID)
         assert stored is not None and stored.origin == "generated"
 
     def test_spec_score_is_capped(self, spec_service, fake_module):
@@ -113,7 +124,7 @@ class TestSpecStore:
         with pytest.raises(EditedSpecError):
             spec_service.generate_eval(haiku_request(), force=True)
 
-        kept = spec_service.store.get_eval_for_key("haiku-writer")
+        kept = spec_service.store.get_eval_for_skill(HAIKU_SKILL_ID)
         assert kept.origin == "edited"
         assert kept.spec["criteria"][0]["id"] == "human"
 
@@ -149,22 +160,20 @@ class TestEvalEndpoints:
     def test_generate_get_edit_lifecycle(self, client):
         created = client.post(
             "/api/skills-evaluator/evals",
-            json={
-                "skill": {"name": "haiku-writer", "description": "Haiku writer skill"},
-                "candidate": {"skill_md": "Write a classical haiku."},
-            },
+            json={"skill_id": HAIKU_SKILL_ID},
         )
         assert created.status_code == 201
         body = created.json()
         assert body["origin"] == "generated"
+        assert body["skill_id"] == HAIKU_SKILL_ID
         assert len(body["spec"]["criteria"]) == 2
         eval_id = body["id"]
 
-        by_name = client.get(
-            "/api/skills-evaluator/evals", params={"skill_name": "haiku-writer"}
+        by_skill = client.get(
+            "/api/skills-evaluator/evals", params={"skill_id": HAIKU_SKILL_ID}
         )
-        assert by_name.status_code == 200
-        assert by_name.json()["id"] == eval_id
+        assert by_skill.status_code == 200
+        assert by_skill.json()["id"] == eval_id
 
         edited = client.put(
             f"/api/skills-evaluator/evals/{eval_id}",
@@ -179,18 +188,22 @@ class TestEvalEndpoints:
 
         regen = client.post(
             "/api/skills-evaluator/evals?force=true",
-            json={
-                "skill": {"name": "haiku-writer"},
-                "candidate": {"skill_md": "Write a classical haiku."},
-            },
+            json={"skill_id": HAIKU_SKILL_ID},
         )
         assert regen.status_code == 409
+
+    def test_generate_requires_skill_id(self, client):
+        response = client.post(
+            "/api/skills-evaluator/evals",
+            json={"candidate": {"skill_md": "Write a classical haiku."}},
+        )
+        assert response.status_code == 400
 
     def test_get_unknown_is_404(self, client):
         assert client.get("/api/skills-evaluator/evals/nope").status_code == 404
         assert (
             client.get(
-                "/api/skills-evaluator/evals", params={"skill_name": "ghost"}
+                "/api/skills-evaluator/evals", params={"skill_id": "ghost"}
             ).status_code
             == 404
         )

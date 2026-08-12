@@ -9,22 +9,25 @@ is in the dev shell.
 | `lifecycle.hurl` | Day-zero skill: spec-mode judgment → generated spec → human edit → edit protection (409) → spec-grounded revision → accept → label immutability (409) | evaluator + tapes + LLM key |
 | `evidence.hurl` | Behavioral axis: evaluate a stored tapes skill by id against its provenance sessions | evaluator + tapes + captured sessions |
 
+Every evaluator request names a tapes skill row (`skill_id` is required),
+so tapes is a prerequisite for everything past `smoke.hurl`.
+
 ## Run everything
 
 ```bash
 ./run.sh
 ```
 
-It mints a fresh skill name for `lifecycle.hurl` (specs are one-per-skill and
-human edits are permanent — reusing a name would trip the 409 the suite
-itself asserts) and discovers a `skill_id` for `evidence.hurl` from tapes,
-skipping it when none exists.
+It creates a fresh skill row for `lifecycle.hurl` through `POST /v1/skills`
+(specs are one-per-skill and human edits are permanent — reusing a row would
+trip the 409 the suite itself asserts) and discovers a `skill_id` for
+`evidence.hurl` from tapes, skipping it when none exists.
 
 ## Run one file
 
 ```bash
 hurl --variables-file vars.env --test smoke.hurl
-hurl --variables-file vars.env --variable skill=demo-$RANDOM --test lifecycle.hurl
+hurl --variables-file vars.env --variable skill_id=<uuid> --test lifecycle.hurl
 hurl --variables-file vars.env --variable skill_id=<uuid> --test evidence.hurl
 ```
 

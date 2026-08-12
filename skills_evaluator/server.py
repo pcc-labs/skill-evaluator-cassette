@@ -106,16 +106,13 @@ def create_app(
         except SkillNotFoundError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         except Exception as error:  # noqa: BLE001 - the boundary reports, never hides
-            logger.exception(
-                "evaluation failed for skill %s",
-                parsed.skill_id or parsed.skill.name,
-            )
+            logger.exception("evaluation failed for skill %s", parsed.skill_id)
             raise HTTPException(
                 status_code=502, detail=f"evaluation failed: {error}"
             ) from error
         logger.info(
             "evaluated skill %s: decision=%s score=%s findings=%d sessions=%d",
-            parsed.skill_id or parsed.skill.name or (parsed.ref.id if parsed.ref else ""),
+            parsed.skill_id,
             response.decision,
             response.score,
             len(response.findings),
@@ -130,10 +127,11 @@ def create_app(
             raise HTTPException(
                 status_code=400, detail=f"body must be a valid request: {error}"
             ) from error
-        if not parsed.candidate.skill_md.strip() and not parsed.skill_id.strip():
+        if not parsed.skill_id.strip():
             raise HTTPException(
                 status_code=400,
-                detail="either candidate.skill_md or skill_id is required",
+                detail="skill_id is required: every evaluation is anchored on a "
+                "tapes skill row (create one with POST /v1/skills first)",
             )
         return parsed
 
@@ -236,23 +234,21 @@ def create_app(
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         except Exception as error:  # noqa: BLE001 - the boundary reports, never hides
-            logger.exception(
-                "eval generation failed for %s", parsed.skill_id or parsed.skill.name
-            )
+            logger.exception("eval generation failed for %s", parsed.skill_id)
             raise HTTPException(
                 status_code=502, detail=f"eval generation failed: {error}"
             ) from error
-        logger.info("eval spec %s stored for %s", record.id, record.skill_key)
+        logger.info("eval spec %s stored for %s", record.id, record.skill_id)
         return _eval_response(record)
 
     @app.get(f"{prefix}/evals", response_model=EvalResponse)
-    def get_eval_for_skill(skill_id: str = "", skill_name: str = "") -> EvalResponse:
+    def get_eval_for_skill(skill_id: str = "") -> EvalResponse:
         if service is None or service.store is None:
             raise HTTPException(status_code=503, detail="eval store unavailable")
-        key = skill_id.strip() or skill_name.strip()
+        key = skill_id.strip()
         if not key:
-            raise HTTPException(status_code=400, detail="skill_id or skill_name is required")
-        record = service.store.get_eval_for_key(key)
+            raise HTTPException(status_code=400, detail="skill_id is required")
+        record = service.store.get_eval_for_skill(key)
         if record is None:
             raise HTTPException(status_code=404, detail=f"no eval spec for {key!r}")
         return _eval_response(record)
@@ -291,7 +287,6 @@ def create_app(
 def _eval_response(record: EvalRecord) -> EvalResponse:
     return EvalResponse(
         id=record.id,
-        skill_key=record.skill_key,
         skill_id=record.skill_id,
         skill_name=record.skill_name,
         origin=record.origin,
@@ -383,8 +378,12 @@ def _openapi_document(manifest: dict[str, Any], prefix: str) -> dict[str, Any]:
                     "summary": "Fetch the eval spec for a skill",
                     "tags": [manifest["cassette"]["name"]],
                     "parameters": [
-                        {"name": "skill_id", "in": "query", "schema": {"type": "string"}},
-                        {"name": "skill_name", "in": "query", "schema": {"type": "string"}},
+                        {
+                            "name": "skill_id",
+                            "in": "query",
+                            "required": True,
+                            "schema": {"type": "string"},
+                        },
                     ],
                     "responses": {
                         "200": {
@@ -549,13 +548,17 @@ def _openapi_document(manifest: dict[str, Any], prefix: str) -> dict[str, Any]:
                     "operationId": "evaluateSkill",
                     "summary": "Judge one skill document against captured session evidence",
                     "description": (
-                        "Accepts the skill inline or as a tapes skill_id (resolved "
-                        "with its provenance sessions as seed evidence), finds "
-                        "related sessions via span search, triages each transcript, "
-                        "and runs a DSPy judgment over the annotated evidence. "
-                        "Returns findings, metrics, a 0..1 score, and a pass/revise "
-                        "decision. Host adapters (e.g. the OpenClaw Gateway plugin) "
-                        "conform their events to this shape."
+                        "Requires a tapes skill_id — every evaluation is anchored "
+                        "on a skills-table row, resolved with its provenance "
+                        "sessions as seed evidence. An inline candidate bundle, "
+                        "when sent, is the proposed document replacing the stored "
+                        "content. Finds related sessions via span search, triages "
+                        "each transcript, and runs a DSPy judgment over the "
+                        "annotated evidence. Returns findings, metrics, a 0..1 "
+                        "score, and a pass/revise decision. Host adapters (e.g. "
+                        "the OpenClaw Gateway plugin) create a skill row through "
+                        "POST /v1/skills for greenfield proposals, then conform "
+                        "their events to this shape."
                     ),
                     "tags": [manifest["cassette"]["name"]],
                     "requestBody": {

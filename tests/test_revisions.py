@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import seed_morning_skill
 from skills_evaluator.server import create_app
 from skills_evaluator.service import NoEvidenceError
 from skills_evaluator.store import (
@@ -159,18 +160,20 @@ class TestStoreLifecycle:
 
 class TestRevisionEndpoints:
     def test_full_lifecycle(self, client, fake_tapes):
+        skill_id = seed_morning_skill(fake_tapes)
         seed_evidence(fake_tapes)
         created = client.post(
             "/api/skills-evaluator/revisions",
             json={
                 "ref": {"source": "test", "id": "prop-1"},
-                "skill": {"name": "morning-catchup", "description": "Daily inbox triage"},
+                "skill_id": skill_id,
                 "candidate": {"skill_md": "# Morning catchup\n\nSteps."},
             },
         )
         assert created.status_code == 201
         body = created.json()
         assert body["status"] == "proposed"
+        assert body["skill_id"] == skill_id
         assert body["ref"]["id"] == "prop-1"
         revision_id = body["id"]
 
@@ -190,12 +193,19 @@ class TestRevisionEndpoints:
         )
         assert flipped.status_code == 409
 
-    def test_no_evidence_is_409(self, client):
+    def test_no_evidence_is_409(self, client, fake_tapes):
+        skill_id = seed_morning_skill(fake_tapes)
         response = client.post(
-            "/api/skills-evaluator/revisions",
-            json={"skill": {"name": "n"}, "candidate": {"skill_md": "# s"}},
+            "/api/skills-evaluator/revisions", json={"skill_id": skill_id}
         )
         assert response.status_code == 409
+
+    def test_missing_skill_id_is_400(self, client):
+        response = client.post(
+            "/api/skills-evaluator/revisions",
+            json={"candidate": {"skill_md": "# s"}},
+        )
+        assert response.status_code == 400
 
     def test_status_validation_and_404(self, client):
         assert (
