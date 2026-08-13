@@ -1,0 +1,139 @@
+# The skills-evaluator cassette's publishable manifest.
+#
+# This is the authored form of the metadata this cassette serves at `/openapi`
+# under the `x-tapes-cassette` extension. It is the artifact a registry or an
+# orchestrator reads *before* anything is running: what image to pull, what
+# port it listens on, which contract of tapes it needs, and what a deployment
+# has to provision for it. It is deployment-agnostic on purpose — the same
+# manifest describes the cassette to a clearing's operator, a Kubernetes CR,
+# a docker-compose file, or a bare `uv run`.
+#
+# The dependency only points one way. This file declares `depends.core = "v1"`;
+# a tapes core decides for itself whether it serves that contract and admits or
+# refuses the cassette accordingly. Nothing here names a version of tapes that
+# must exist, and tapes has no hardcoded opinion of what this file should say.
+#
+# The server reads none of this. It carries its own copy of the manifest and
+# serves it in the OpenAPI document's `x-tapes-cassette` extension;
+# `tests/test_manifest.py` parses this very file and asserts the two agree,
+# so drift between what this manifest promises and what the server serves is
+# a test failure. This file is for whoever has to start the thing in the
+# first place.
+
+kind = "cassette/v1alpha1"
+
+# Who this cassette is, and what a deployment needs in order to run it.
+#
+# `name` is the identity everything else derives from: the route
+# (/v1/cassettes/skills-evaluator), the Postgres schema ("skills-evaluator"),
+# and the role ("cassette_skills-evaluator").
+[cassette]
+name = "skills-evaluator"
+version = "0.1.0"
+display_name = "Skills Evaluator"
+description = "Evaluates skill documents against captured tapes sessions with a DSPy pipeline."
+license = "Apache-2.0"
+homepage = "https://github.com/papercomputeco/skills-evaluator-cassette"
+image = "tapes/skills-evaluator-cassette:0.1.0"
+port = 9978
+
+# What this cassette needs from tapes.
+#
+# `core` is a major contract version, not a release: it names the tapes read
+# surface this cassette was written against — /v1/skills (every request is
+# anchored on a skill row by required skill_id), /v1/search/spans, and
+# /v1/traces, all over HTTP. It reads no contract views.
+[depends]
+core = "v1"
+views = []
+
+# Where the things core needs live on this cassette's own listener.
+#
+# `prefix_path` is the one that matters: this process serves its API under
+# /api/skills-evaluator, core republishes it under
+# /v1/cassettes/skills-evaluator, and this field is what makes that swap a
+# stated fact rather than a guess.
+[api]
+health = "/ping"
+openapi = "/openapi"
+prefix_path = "api"
+
+# Tables this cassette owns in its own schema ("skills-evaluator"). The
+# declaration is for whoever provisions the database — core neither creates
+# the schema nor grants access to it. The cassette runs its own migration at
+# startup when the deployment supplies TAPES_DATABASE_URL; without one, both
+# tables fall back to an in-memory store. Both key on the required skill_id —
+# a verified (but not SQL-enforced) reference to a row in tapes' skills
+# table. The revisions table is the accept/reject corpus: each row links a
+# proposed rewrite (and the evaluation that motivated it) to its skill row
+# and, once a host reports back, the human verdict.
+[[tables]]
+name = "revisions"
+
+# One current eval spec per skill id: the skill's intrinsic, human-editable
+# metric. origin records whether a human has taken it over; edited specs
+# are never regenerated.
+[[tables]]
+name = "evals"
+
+# Configuration this cassette accepts, published as schema so a deployment
+# can render a form or validate values. Tapes never supplies these; the
+# deployment does, through the environment as CASSETTE_* variables (dots
+# become underscores: llm.api_key -> CASSETTE_LLM_API_KEY).
+
+[[config]]
+key = "tapes_base_url"
+type = "string"
+default = "http://127.0.0.1:8081"
+description = "Base URL of the tapes core API used for skill resolution, span search, and trace reads."
+
+[[config]]
+key = "search_top_k"
+type = "int"
+default = 5
+min = 1
+max = 50
+description = "Span-search depth per derived query."
+
+[[config]]
+key = "max_sessions"
+type = "int"
+default = 3
+min = 1
+max = 10
+description = "How many matched sessions feed the triage + judge pipeline."
+
+[[config]]
+key = "search_min_score"
+type = "string"
+default = "0.35"
+description = "Relevance gate: search hits scoring below this are noise, not evidence (0..1)."
+
+[[config]]
+key = "spec_autogenerate"
+type = "bool"
+default = true
+description = "Draft-and-store an eval spec inline when a skill has neither evidence nor a spec."
+
+[[config]]
+key = "llm.provider"
+type = "string"
+default = "anthropic"
+enum = ["anthropic", "openai", "ollama"]
+description = "Provider for the DSPy judge model."
+
+[[config]]
+key = "llm.model"
+type = "string"
+description = "Judge model; empty uses the provider's default."
+
+[[config]]
+key = "llm.api_key"
+type = "string"
+secret = true
+description = "API key for the judge provider (unused for ollama)."
+
+[[config]]
+key = "llm.base_url"
+type = "string"
+description = "Override base URL for the judge provider."

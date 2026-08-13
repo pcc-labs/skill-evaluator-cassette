@@ -10,19 +10,21 @@ Four things make this process a tapes cassette:
    ``/v1/cassettes/skills-evaluator``.
 4. Configuration arrives entirely through the environment.
 
-The manifest is authored once, in ``cassette.toml``, read with stdlib
-tomllib and embedded verbatim — the authored and served manifests are the
-same bytes by construction. The request/response schemas in the document
-are generated from the pydantic wire models, so a renamed field cannot
-keep its old name in the contract.
+This server is the *manifestation* of the repo-root ``cassette.toml``: that
+file describes the cassette to whoever has to run it (image, port, contract,
+config schema) and is read by deployment tooling, never by this process. The
+served copy below is authored in code, and ``tests/test_manifest.py`` parses
+the TOML and asserts the two agree — drift between what the manifest
+promises and what the server serves is a test failure, not a runtime
+dependency. The request/response schemas in the document are generated from
+the pydantic wire models, so a renamed field cannot keep its old name in
+the contract.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import tomllib
-from importlib import resources
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
@@ -57,11 +59,100 @@ logger = logging.getLogger(__name__)
 MAX_REQUEST_BYTES = 16 << 20
 
 
+# The manifest this server serves under `x-tapes-cassette` — the in-code
+# twin of the repo-root cassette.toml. tests/test_manifest.py holds the two
+# equal; edit them together.
+MANIFEST: dict[str, Any] = {
+    "kind": "cassette/v1alpha1",
+    "cassette": {
+        "name": "skills-evaluator",
+        "version": "0.3.0",
+        "display_name": "Skills Evaluator",
+        "description": (
+            "Evaluates skill documents against captured tapes sessions "
+            "with a DSPy pipeline."
+        ),
+        "license": "Apache-2.0",
+        "homepage": "https://github.com/papercomputeco/skills-evaluator",
+        "image": "tapes/skills-evaluator-cassette:0.3.0",
+        "port": 9978,
+    },
+    "depends": {"core": "v1", "views": []},
+    "api": {"health": "/ping", "openapi": "/openapi", "prefix_path": "api"},
+    "tables": [{"name": "revisions"}, {"name": "evals"}],
+    "config": [
+        {
+            "key": "tapes_base_url",
+            "type": "string",
+            "default": "http://127.0.0.1:8081",
+            "description": (
+                "Base URL of the tapes core API used for skill resolution, "
+                "span search, and trace reads."
+            ),
+        },
+        {
+            "key": "search_top_k",
+            "type": "int",
+            "default": 5,
+            "min": 1,
+            "max": 50,
+            "description": "Span-search depth per derived query.",
+        },
+        {
+            "key": "max_sessions",
+            "type": "int",
+            "default": 3,
+            "min": 1,
+            "max": 10,
+            "description": "How many matched sessions feed the triage + judge pipeline.",
+        },
+        {
+            "key": "search_min_score",
+            "type": "string",
+            "default": "0.35",
+            "description": (
+                "Relevance gate: search hits scoring below this are noise, "
+                "not evidence (0..1)."
+            ),
+        },
+        {
+            "key": "spec_autogenerate",
+            "type": "bool",
+            "default": True,
+            "description": (
+                "Draft-and-store an eval spec inline when a skill has "
+                "neither evidence nor a spec."
+            ),
+        },
+        {
+            "key": "llm.provider",
+            "type": "string",
+            "default": "anthropic",
+            "enum": ["anthropic", "openai", "ollama"],
+            "description": "Provider for the DSPy judge model.",
+        },
+        {
+            "key": "llm.model",
+            "type": "string",
+            "description": "Judge model; empty uses the provider's default.",
+        },
+        {
+            "key": "llm.api_key",
+            "type": "string",
+            "secret": True,
+            "description": "API key for the judge provider (unused for ollama).",
+        },
+        {
+            "key": "llm.base_url",
+            "type": "string",
+            "description": "Override base URL for the judge provider.",
+        },
+    ],
+}
+
+
 def load_manifest() -> dict[str, Any]:
-    raw = (
-        resources.files("skills_evaluator").joinpath("cassette.toml").read_bytes()
-    )
-    return tomllib.loads(raw.decode())
+    return MANIFEST
 
 
 def create_app(

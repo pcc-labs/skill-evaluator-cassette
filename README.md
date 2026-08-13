@@ -67,8 +67,9 @@ tapes serve --cassettes=http://127.0.0.1:9978/openapi
 
 Tapes republishes the API at `POST /v1/cassettes/skills-evaluator/evaluate`.
 Configuration is environment-only, published as schema in
-[`skills_evaluator/cassette.toml`](./skills_evaluator/cassette.toml)
-(dots become underscores: `llm.api_key` → `CASSETTE_LLM_API_KEY`). Without an
+[`cassette.toml`](./cassette.toml) — the deployment-agnostic manifest at the
+repo root (dots become underscores: `llm.api_key` → `CASSETTE_LLM_API_KEY`).
+Without an
 LLM credential the cassette still starts and answers discovery; `/evaluate`
 reports 503.
 
