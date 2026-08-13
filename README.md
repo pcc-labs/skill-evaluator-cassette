@@ -6,6 +6,17 @@ documents against real captured session data, built on
 
 ---
 
+## 🧭 Scope
+
+This cassette is scoped to the tapes cassette ecosystem, for now. The unit
+of evaluation is a skill: a row in the tapes skills table, judged against
+tapes telemetry. It is not a general document evaluator and not a platform
+eval harness (that job belongs to
+[pcc-labs/evals](https://github.com/pcc-labs/evals)). If evaluation ever
+expands to other artifacts, docs for example, scope and naming get revisited
+then. Until this cassette proves its value on skills, it stays in pcc-labs
+and stays skills-only.
+
 ## 🧪 How it works
 
 The tapes **skills table is the unit of identity**: every API takes a
