@@ -66,15 +66,15 @@ MANIFEST: dict[str, Any] = {
     "kind": "cassette/v1alpha1",
     "cassette": {
         "name": "skills-evaluator",
-        "version": "0.3.0",
+        "version": "0.1.0",
         "display_name": "Skills Evaluator",
         "description": (
             "Evaluates skill documents against captured tapes sessions "
             "with a DSPy pipeline."
         ),
         "license": "Apache-2.0",
-        "homepage": "https://github.com/papercomputeco/skills-evaluator",
-        "image": "tapes/skills-evaluator-cassette:0.3.0",
+        "homepage": "https://github.com/papercomputeco/skills-evaluator-cassette",
+        "image": "tapes/skills-evaluator-cassette:0.1.0",
         "port": 9978,
     },
     "depends": {"core": "v1", "views": []},
