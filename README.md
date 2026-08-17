@@ -30,7 +30,7 @@ back in the response.
 Hosts conform through thin adapters — OpenClaw's
 [Skill Workshop](https://docs.openclaw.ai/tools/skill-workshop) plugs in via
 the `openclaw-tapes` OpenClaw Gateway plugin, which **creates a skill row
-first** (through the ordinary `POST /v1/skills` API) when a greenfield
+first** (through `POST /v1/cassettes/skills`) when a greenfield
 workshop proposal has no tapes id yet, then evaluates against that id.
 Paper platform callers (console, CLI, a generation-time quality gate)
 already hold a `skill_id` and POST it directly.
@@ -41,7 +41,7 @@ two-stage DSPy pipeline:
 1. **Evidence selection** — the resolved skill row brings its
    **provenance** (`originatingSessionIds`, the sessions it was generated
    from), which outranks anything search can find; span search
-   (`GET /v1/search/spans`) over the skill's name, description, and headings
+   (`GET /v1/cassettes/search/spans`) over the skill's name, description, and headings
    tops up the evidence with newer related sessions. Chosen sessions render
    as transcripts.
 2. **Triage** (`dspy.ChainOfThought(SessionTriage)`) — each transcript is
@@ -89,10 +89,10 @@ reports 503.
 # provenance sessions first:
 curl -s -X POST http://127.0.0.1:8081/v1/cassettes/skills-evaluator/evaluate \
   -H 'Content-Type: application/json' \
-  -d '{"skill_id": "<uuid from GET /v1/skills>"}' | jq '{decision, score, metrics}'
+  -d '{"skill_id": "<uuid from GET /v1/cassettes/skills>"}' | jq '{decision, score, metrics}'
 
 # A proposal for that row (what the OpenClaw plugin sends — for a
-# greenfield workshop skill it creates the row first via POST /v1/skills):
+# greenfield workshop skill it creates the row first via POST /v1/cassettes/skills):
 curl -s -X POST http://127.0.0.1:8081/v1/cassettes/skills-evaluator/evaluate \
   -H 'Content-Type: application/json' \
   -d '{
@@ -144,7 +144,8 @@ rewrites, and never evaluator meta-commentary inside the document).
 
 Each revision is stored `proposed` in the cassette's **own Postgres table**
 (`"skills-evaluator".revisions`, declared in the manifest, migrated at
-startup when `TAPES_DATABASE_URL` is set; memory-only otherwise), keyed by
+startup when `TAPES_DATABASE_URL` is set, applying the versioned
+[`yoyo` migrations](./skills_evaluator/migrations); memory-only otherwise), keyed by
 the required `skill_id` back to the tapes skills table, so a skill's whole
 revision history hangs together on one key. (The reference is verified
 against tapes on write, but deliberately not a SQL FOREIGN KEY — a cassette

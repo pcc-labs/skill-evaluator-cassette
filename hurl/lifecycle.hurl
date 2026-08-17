@@ -5,13 +5,13 @@
 #   accept the revision → prove labels never flip.
 #
 # Every request names a tapes skill row: the suite runner creates a fresh
-# one through POST /v1/skills first (specs are one-per-skill and human
+# one through POST /v1/cassettes/skills first (specs are one-per-skill and human
 # edits are permanent by design, so a fresh row per run), then passes its
 # id in:
 #
 #   hurl \
 #     --variables-file vars.env \
-#     --variable skill_id=<uuid from POST /v1/skills> lifecycle.hurl
+#     --variable skill_id=<uuid from POST /v1/cassettes/skills> lifecycle.hurl
 #
 # Or use ./run.sh, which creates the skill and does it for you.
 

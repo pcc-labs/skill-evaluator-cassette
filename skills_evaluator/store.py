@@ -27,7 +27,11 @@ import json
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from yoyo import get_backend, read_migrations
 
 # The cassette's schema name is its cassette name; the hyphen makes quoting
 # mandatory everywhere it reaches SQL.
@@ -231,9 +235,24 @@ def _check_transition(record: RevisionRecord, status: str) -> None:
         )
 
 
+def _migration_dsn(dsn: str) -> str:
+    """Select yoyo's Psycopg 3 backend and keep its ledger in our schema."""
+    parsed = urlsplit(dsn)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["schema"] = f'"{SCHEMA}"'
+    return urlunsplit(
+        (
+            "postgresql+psycopg",
+            parsed.netloc,
+            parsed.path,
+            urlencode(query),
+            parsed.fragment,
+        )
+    )
+
+
 class PostgresRevisionStore:
-    """Owns exactly one table in exactly one schema, and creates both itself.
-    The deployment provisions the role and grants; core never sees the DDL."""
+    """Owns its schema and tables, applying versioned migrations at startup."""
 
     def __init__(self, dsn: str) -> None:
         import psycopg
@@ -249,39 +268,15 @@ class PostgresRevisionStore:
         return self._psycopg.connect(self._dsn, autocommit=True)
 
     def _migrate(self) -> None:
+        # Bootstrap only the namespace yoyo stores its own migration ledger in;
+        # every cassette table and index belongs in a versioned migration.
         with self._connect() as conn:
             conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{SCHEMA}"')
-            conn.execute(
-                f'''CREATE TABLE IF NOT EXISTS "{SCHEMA}".revisions (
-                    id                UUID PRIMARY KEY,
-                    skill_id          TEXT NOT NULL DEFAULT '',
-                    ref               JSONB,
-                    skill_name        TEXT NOT NULL DEFAULT '',
-                    original_skill_md TEXT NOT NULL,
-                    revised_skill_md  TEXT NOT NULL,
-                    rationale         TEXT NOT NULL DEFAULT '',
-                    evaluation        JSONB NOT NULL,
-                    status            TEXT NOT NULL DEFAULT 'proposed',
-                    status_reason     TEXT NOT NULL DEFAULT '',
-                    created_at        TIMESTAMPTZ NOT NULL,
-                    decided_at        TIMESTAMPTZ
-                )'''
-            )
-            conn.execute(
-                f'CREATE INDEX IF NOT EXISTS revisions_skill_idx '
-                f'ON "{SCHEMA}".revisions (skill_id, created_at DESC)'
-            )
-            conn.execute(
-                f'''CREATE TABLE IF NOT EXISTS "{SCHEMA}".evals (
-                    id         UUID PRIMARY KEY,
-                    skill_id   TEXT NOT NULL UNIQUE,
-                    skill_name TEXT NOT NULL DEFAULT '',
-                    spec       JSONB NOT NULL,
-                    origin     TEXT NOT NULL DEFAULT 'generated',
-                    created_at TIMESTAMPTZ NOT NULL,
-                    updated_at TIMESTAMPTZ NOT NULL
-                )'''
-            )
+
+        migrations = read_migrations(str(Path(__file__).with_name("migrations")))
+        with get_backend(_migration_dsn(self._dsn)) as backend:
+            with backend.lock():
+                backend.apply_migrations(backend.to_apply(migrations))
 
     _COLUMNS = (
         "id, skill_id, ref, skill_name, original_skill_md, revised_skill_md, "

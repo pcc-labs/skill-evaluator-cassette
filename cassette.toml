@@ -40,9 +40,10 @@ port = 9978
 # What this cassette needs from tapes.
 #
 # `core` is a major contract version, not a release: it names the tapes read
-# surface this cassette was written against — /v1/skills (every request is
-# anchored on a skill row by required skill_id), /v1/search/spans, and
-# /v1/traces, all over HTTP. It reads no contract views.
+# surface this cassette was written against — /v1/cassettes/skills (every
+# request is anchored on a skill row by required skill_id),
+# /v1/cassettes/search/spans, and /v1/traces, all over HTTP. It reads no
+# contract views.
 [depends]
 core = "v1"
 views = []
@@ -60,8 +61,9 @@ prefix_path = "api"
 
 # Tables this cassette owns in its own schema ("skills-evaluator"). The
 # declaration is for whoever provisions the database — core neither creates
-# the schema nor grants access to it. The cassette runs its own migration at
-# startup when the deployment supplies TAPES_DATABASE_URL; without one, both
+# the schema nor grants access to it. The cassette applies its own versioned
+# yoyo migrations at startup when the deployment supplies TAPES_DATABASE_URL;
+# without one, both
 # tables fall back to an in-memory store. Both key on the required skill_id —
 # a verified (but not SQL-enforced) reference to a row in tapes' skills
 # table. The revisions table is the accept/reject corpus: each row links a

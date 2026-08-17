@@ -25,7 +25,7 @@ FROM python:3.14-slim-bookworm
 WORKDIR /app
 COPY --from=build /app/.venv /app/.venv
 COPY --from=build /app/skills_evaluator /app/skills_evaluator
-ENV PATH="/app/.venv/bin:$PATH"
+ENV PATH="/app/.venv/bin:$PATH" USER=skills-evaluator
 
 # Matches cassette.port in cassette.toml. The operator injects
 # CASSETTE_LISTEN with the same port from the TapesCassette spec; this is

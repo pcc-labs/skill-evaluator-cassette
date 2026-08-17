@@ -11,7 +11,7 @@ metadata echoed back verbatim.
 Hosts conform through thin adapters. Paper platform callers already hold a
 skill_id. The OpenClaw Gateway plugin evaluates greenfield workshop
 proposals with no tapes row yet — so it creates one first through the
-ordinary skills API (``POST /v1/skills``) and evaluates against that id.
+skills cassette API (``POST /v1/cassettes/skills``) and evaluates against that id.
 
 Field names are snake_case like the rest of the tapes surface. Every
 response field is bounded: the caps happen to sit inside OpenClaw's

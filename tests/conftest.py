@@ -19,7 +19,7 @@ MORNING_SKILL_MD = (
 def seed_morning_skill(fake_tapes: "FakeTapes") -> str:
     """Seeds the canonical test skill row. Every request names a stored
     skill now, so tests seed the row the way the plugin would have created
-    it (POST /v1/skills) before evaluating."""
+    it (POST /v1/cassettes/skills) before evaluating."""
     fake_tapes.skills[MORNING_SKILL_ID] = SkillRecord(
         id=MORNING_SKILL_ID,
         name="morning-catchup",

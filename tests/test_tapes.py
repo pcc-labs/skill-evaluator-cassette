@@ -14,6 +14,7 @@ def make_client(handler) -> TapesClient:
 
 def test_search_spans_maps_hits_and_503():
     def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/cassettes/search/spans"
         assert request.url.params["query"] == "inbox triage"
         assert request.url.params["top_k"] == "5"
         return httpx.Response(
@@ -39,6 +40,25 @@ def test_search_spans_maps_hits_and_503():
     unavailable = make_client(lambda _: httpx.Response(503, text="no embedder"))
     with pytest.raises(SearchUnavailableError):
         unavailable.search_spans("q", 5)
+
+
+def test_get_skill_uses_skills_cassette():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/cassettes/skills/skill-1"
+        return httpx.Response(
+            200,
+            json={
+                "id": "skill-1",
+                "name": "Triage",
+                "description": "Triage an inbox",
+                "content": "# Triage",
+                "originatingSessionIds": ["session-1"],
+            },
+        )
+
+    skill = make_client(handler).get_skill("skill-1")
+    assert skill.name == "Triage"
+    assert skill.originating_session_ids == ["session-1"]
 
 
 def test_transcript_renders_spine_and_tools():

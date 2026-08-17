@@ -1,0 +1,103 @@
+name: tapes-skills-evaluator
+
+services:
+  postgres:
+    image: public.ecr.aws/g4e5l3z3/papercomputeco/postgres:17.7-pgduckdb-1.1.1
+    environment:
+      POSTGRES_DB: tapes
+      POSTGRES_USER: tapes
+      POSTGRES_PASSWORD: tapes
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U tapes -d tapes"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  skills:
+    image: public.ecr.aws/g4e5l3z3/papercomputeco/skills-cassette:latest
+    environment:
+      CASSETTE_CORE_URL: http://tapes.svc:8081
+      CASSETTE_LLM_PROVIDER: openai
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+      TAPES_DATABASE_URL: postgres://tapes:tapes@postgres:5432/tapes?sslmode=disable
+    ports:
+      - "127.0.0.1:9999:9998"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  search:
+    image: public.ecr.aws/g4e5l3z3/papercomputeco/search-cassette:latest
+    environment:
+      CASSETTE_EMBEDDING_PROVIDER: openai
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+      CASSETTE_WAIT_FOR_DB: "true"
+      TAPES_DATABASE_URL: postgres://tapes:tapes@postgres:5432/tapes?sslmode=disable
+    ports:
+      - "127.0.0.1:9998:9998"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  skills-evaluator:
+    build: .
+    environment:
+      CASSETTE_TAPES_BASE_URL: http://tapes:8081
+      CASSETTE_LLM_PROVIDER: openai
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+      TAPES_DATABASE_URL: postgres://tapes:tapes@postgres:5432/tapes?sslmode=disable
+    ports:
+      - "127.0.0.1:9978:9978"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      skills:
+        condition: service_started
+      search:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9978/ping')"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  tapes:
+    image: public.ecr.aws/g4e5l3z3/papercomputeco/tapes:latest
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+    command: >-
+      serve
+      --provider openai
+      --upstream https://api.openai.com
+      --embedding-provider openai
+      --embed-spans=false
+      --postgres postgres://tapes:tapes@postgres:5432/tapes?sslmode=disable
+      --cassettes http://skills:9998/openapi,http://search:9998/openapi,http://skills-evaluator:9978/openapi
+      --cassette-refresh 10s
+      --log-level=debug
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8081:8081"
+    volumes:
+      - tapes-data:/data
+    networks:
+      default:
+        aliases:
+          - tapes.svc
+    depends_on:
+      postgres:
+        condition: service_healthy
+      skills:
+        condition: service_started
+      search:
+        condition: service_started
+      skills-evaluator:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  tapes-data:

@@ -40,7 +40,7 @@ class SearchHit:
 
 @dataclass
 class SkillRecord:
-    """The slice of a tapes skill (GET /v1/skills/{id}) evaluation uses.
+    """The slice of a tapes skill (GET /v1/cassettes/skills/{id}) evaluation uses.
     ``originating_session_ids`` is the provenance — the sessions the skill
     was generated from — and the strongest evidence to judge it against."""
 
@@ -84,7 +84,7 @@ class TapesClient:
 
     def search_spans(self, query: str, top_k: int) -> list[SearchHit]:
         response = self._client.get(
-            f"{self.base_url}/v1/search/spans",
+            f"{self.base_url}/v1/cassettes/search/spans",
             params={"query": query, "top_k": str(top_k)},
         )
         if response.status_code == 503:
@@ -105,7 +105,9 @@ class TapesClient:
     def get_skill(self, skill_id: str) -> SkillRecord:
         """Resolves a platform skill by id. The skills surface is camelCase
         (it predates the rest of the API's snake_case; the console owns it)."""
-        response = self._client.get(f"{self.base_url}/v1/skills/{skill_id}")
+        response = self._client.get(
+            f"{self.base_url}/v1/cassettes/skills/{skill_id}"
+        )
         if response.status_code == 404:
             raise SkillNotFoundError(f"skill {skill_id} not found")
         response.raise_for_status()

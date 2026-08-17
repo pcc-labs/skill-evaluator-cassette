@@ -6,7 +6,7 @@
 #
 #   hurl \
 #     --variables-file vars.env \
-#     --variable skill_id=$(curl -s http://127.0.0.1:8081/v1/skills | jq -r '.items[0].id') \
+#     --variable skill_id=$(curl -s http://127.0.0.1:8081/v1/cassettes/skills | jq -r '.items[0].id') \
 #     evidence.hurl
 
 POST {{root_url}}/api/skills-evaluator/evaluate
