@@ -40,7 +40,7 @@ port = 9978
 # What this cassette needs from tapes.
 #
 # `core` is a major contract version, not a release: it names the tapes read
-# surface this cassette was written against — /v1/cassettes/skills (every
+# surface this cassette was written against — /v1/skills (every
 # request is anchored on a skill row by required skill_id),
 # /v1/cassettes/search/spans, and /v1/traces, all over HTTP. It reads no
 # contract views.

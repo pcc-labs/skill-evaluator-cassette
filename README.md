@@ -30,7 +30,7 @@ back in the response.
 Hosts conform through thin adapters — OpenClaw's
 [Skill Workshop](https://docs.openclaw.ai/tools/skill-workshop) plugs in via
 the `openclaw-tapes` OpenClaw Gateway plugin, which **creates a skill row
-first** (through `POST /v1/cassettes/skills`) when a greenfield
+first** (through `POST /v1/skills`) when a greenfield
 workshop proposal has no tapes id yet, then evaluates against that id.
 Paper platform callers (console, CLI, a generation-time quality gate)
 already hold a `skill_id` and POST it directly.
@@ -89,10 +89,10 @@ reports 503.
 # provenance sessions first:
 curl -s -X POST http://127.0.0.1:8081/v1/cassettes/skills-evaluator/evaluate \
   -H 'Content-Type: application/json' \
-  -d '{"skill_id": "<uuid from GET /v1/cassettes/skills>"}' | jq '{decision, score, metrics}'
+  -d '{"skill_id": "<uuid from GET /v1/skills>"}' | jq '{decision, score, metrics}'
 
 # A proposal for that row (what the OpenClaw plugin sends — for a
-# greenfield workshop skill it creates the row first via POST /v1/cassettes/skills):
+# greenfield workshop skill it creates the row first via POST /v1/skills):
 curl -s -X POST http://127.0.0.1:8081/v1/cassettes/skills-evaluator/evaluate \
   -H 'Content-Type: application/json' \
   -d '{

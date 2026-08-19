@@ -222,7 +222,7 @@ def create_app(
             raise HTTPException(
                 status_code=400,
                 detail="skill_id is required: every evaluation is anchored on a "
-                "tapes skill row (create one with POST /v1/cassettes/skills first)",
+                "tapes skill row (create one with POST /v1/skills first)",
             )
         return parsed
 
@@ -648,7 +648,7 @@ def _openapi_document(manifest: dict[str, Any], prefix: str) -> dict[str, Any]:
                         "annotated evidence. Returns findings, metrics, a 0..1 "
                         "score, and a pass/revise decision. Host adapters (e.g. "
                         "the OpenClaw Gateway plugin) create a skill row through "
-                        "POST /v1/cassettes/skills for greenfield proposals, then conform "
+                        "POST /v1/skills for greenfield proposals, then conform "
                         "their events to this shape."
                     ),
                     "tags": [manifest["cassette"]["name"]],

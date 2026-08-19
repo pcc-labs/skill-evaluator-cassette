@@ -18,7 +18,7 @@ so tapes is a prerequisite for everything past `smoke.hurl`.
 ./run.sh
 ```
 
-It creates a fresh skill row for `lifecycle.hurl` through `POST /v1/cassettes/skills`
+It creates a fresh skill row for `lifecycle.hurl` through `POST /v1/skills`
 (specs are one-per-skill and human edits are permanent — reusing a row would
 trip the 409 the suite itself asserts) and discovers a `skill_id` for
 `evidence.hurl` from tapes, skipping it when none exists.

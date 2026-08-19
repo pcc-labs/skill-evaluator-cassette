@@ -42,9 +42,9 @@ def test_search_spans_maps_hits_and_503():
         unavailable.search_spans("q", 5)
 
 
-def test_get_skill_uses_skills_cassette():
+def test_get_skill_uses_tapes_skills_api():
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/v1/cassettes/skills/skill-1"
+        assert request.url.path == "/v1/skills/skill-1"
         return httpx.Response(
             200,
             json={
