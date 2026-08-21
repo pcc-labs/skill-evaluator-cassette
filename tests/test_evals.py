@@ -77,6 +77,7 @@ class TestSpecMode:
         # The generated spec was stored, keyed by the tapes skill id.
         stored = spec_service.store.get_eval_for_skill(HAIKU_SKILL_ID)
         assert stored is not None and stored.origin == "generated"
+        assert stored.source_sha256
 
     def test_spec_score_is_capped(self, spec_service, fake_module):
         fake_module.prediction.score = 1.0
@@ -138,6 +139,36 @@ class TestSpecStore:
         assert forced.id == first.id, "identity survives regeneration"
         assert len(spec_service.spec_generator.calls) == 2
 
+    def test_generated_spec_refreshes_when_stored_skill_changes(
+        self, spec_service, fake_tapes
+    ):
+        first = spec_service.generate_eval(haiku_request(), force=False)
+        fake_tapes.skills[HAIKU_SKILL_ID].content = "Write a modern free-verse poem."
+
+        spec_service.evaluate(haiku_request())
+
+        refreshed = spec_service.store.get_eval_for_skill(HAIKU_SKILL_ID)
+        assert refreshed.id == first.id
+        assert refreshed.source_sha256 != first.source_sha256
+        assert len(spec_service.spec_generator.calls) == 2
+
+    def test_edited_spec_remains_canonical_after_skill_changes(
+        self, spec_service, fake_tapes
+    ):
+        record = spec_service.generate_eval(haiku_request(), force=False)
+        spec_service.store.update_eval_spec(
+            record.id,
+            {"criteria": [{"id": "human", "kind": "content", "description": "d", "weight": 1}], "cases": []},
+        )
+        fake_tapes.skills[HAIKU_SKILL_ID].content = "Changed content."
+
+        spec_service.evaluate(haiku_request())
+
+        kept = spec_service.store.get_eval_for_skill(HAIKU_SKILL_ID)
+        assert kept.origin == "edited"
+        assert kept.spec["criteria"][0]["id"] == "human"
+        assert len(spec_service.spec_generator.calls) == 1
+
 
 class TestSpecGroundedRevision:
     def test_revise_works_from_spec_alone(self, spec_service, request_fixture):
@@ -166,6 +197,7 @@ class TestEvalEndpoints:
         body = created.json()
         assert body["origin"] == "generated"
         assert body["skill_id"] == HAIKU_SKILL_ID
+        assert body["source_sha256"]
         assert len(body["spec"]["criteria"]) == 2
         eval_id = body["id"]
 
@@ -175,12 +207,13 @@ class TestEvalEndpoints:
         assert by_skill.status_code == 200
         assert by_skill.json()["id"] == eval_id
 
+        update = {"spec": {"criteria": [
+            {"id": "syllables", "kind": "output-property",
+             "description": "5-7-5 structure", "weight": 3}
+        ], "cases": []}}
         edited = client.put(
             f"/api/skills-evaluator/evals/{eval_id}",
-            json={"spec": {"criteria": [
-                {"id": "syllables", "kind": "output-property",
-                 "description": "5-7-5 structure", "weight": 3}
-            ], "cases": []}},
+            json=update,
         )
         assert edited.status_code == 200
         assert edited.json()["origin"] == "edited"

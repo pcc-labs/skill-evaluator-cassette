@@ -25,7 +25,9 @@ to that row on one key. `POST /evaluate` takes the `skill_id`, an optional
 inline `candidate` bundle (the *proposed* document replacing the stored
 content — when absent, the stored content itself is judged), an optional
 `baseline` it would replace, and opaque `ref` correlation metadata echoed
-back in the response.
+back in the response. An explicitly empty candidate remains empty rather
+than falling back to stored content. Bundle support files are included as
+read-only model context; revisions still rewrite only `SKILL.md`.
 
 Hosts conform through thin adapters — OpenClaw's
 [Skill Workshop](https://docs.openclaw.ai/tools/skill-workshop) plugs in via
@@ -80,9 +82,9 @@ Tapes republishes the API at `POST /v1/cassettes/skills-evaluator/evaluate`.
 Configuration is environment-only, published as schema in
 [`cassette.toml`](./cassette.toml) — the deployment-agnostic manifest at the
 repo root (dots become underscores: `llm.api_key` → `CASSETTE_LLM_API_KEY`).
-Without an
-LLM credential the cassette still starts and answers discovery; `/evaluate`
-reports 503.
+Without an LLM credential the cassette still starts and answers health and
+discovery, but every evaluation, eval-spec, and revision route reports 503.
+That hard requirement is intentional for this v0 POC.
 
 ```bash
 # A stored skill by id — resolved from tapes, judged against its
@@ -115,14 +117,18 @@ axis: checkable criteria (and test cases) derived from the skill's own
 claims, stored in the cassette's `evals` table, and **human-editable**.
 
 - Search hits below `search_min_score` (default 0.35) are noise, not
-  evidence — they never reach the judge (`spans_gated` in metrics).
+  evidence — they never reach the judge (`spans_gated` in metrics). If the
+  search cassette is absent or unconfigured, evaluation degrades to
+  provenance and/or spec evidence instead of failing.
 - With no surviving evidence, the skill is judged against its spec —
   `mode: "spec"`, every criterion checked one by one, score capped at 0.9
   so behavioral evidence always outranks self-consistency. When no spec
   exists yet, one is drafted and stored inline (`spec_autogenerate`).
 - `POST /evals` generates a spec explicitly; `PUT /evals/{id}` is the human
   edit — `origin` flips to `edited` and generation can never overwrite it
-  (409). Editing the spec is editing the metric: the judge enforces *your*
+  (409). Generated specs record their source bundle hash and refresh when the
+  stored skill changes; a human-edited metric remains canonical across skill
+  edits. Editing the spec is editing the metric: the judge enforces *your*
   criteria on the next evaluation, and revisions rewrite the skill to meet
   them.
 
@@ -149,7 +155,10 @@ startup when `TAPES_DATABASE_URL` is set, applying the versioned
 the required `skill_id` back to the tapes skills table, so a skill's whole
 revision history hangs together on one key. (The reference is verified
 against tapes on write, but deliberately not a SQL FOREIGN KEY — a cassette
-owns tables only in its own schema and never foreign-keys into core's.)
+owns tables only in its own schema and never foreign-keys into core's.) If a
+skill is later deleted, its evaluator rows are intentionally retained as
+corpus history; they cannot seed a new evaluation, but remain queryable by
+their evaluator ids.
 
 Hosts report the human verdict through the status hook:
 

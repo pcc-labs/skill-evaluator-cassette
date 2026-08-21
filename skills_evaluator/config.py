@@ -59,7 +59,10 @@ class Settings:
 def load_settings() -> Settings:
     return Settings(
         listen=_env("CASSETTE_LISTEN", DEFAULT_LISTEN),
-        tapes_base_url=_env("CASSETTE_TAPES_BASE_URL", DEFAULT_TAPES_BASE_URL),
+        tapes_base_url=_env(
+            "CASSETTE_CORE_URL",
+            _env("CASSETTE_TAPES_BASE_URL", DEFAULT_TAPES_BASE_URL),
+        ),
         search_top_k=_env_int("CASSETTE_SEARCH_TOP_K", 5),
         max_sessions=_env_int("CASSETTE_MAX_SESSIONS", 3),
         search_min_score=_env_float("CASSETTE_SEARCH_MIN_SCORE", 0.35),

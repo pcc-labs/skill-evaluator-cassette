@@ -1,6 +1,6 @@
 [project]
 name = "skills-evaluator"
-version = "0.2.0"
+version = "0.0.1"
 description = "Tapes cassette that evaluates OpenClaw skill proposals against captured session data with DSPy"
 readme = "README.md"
 authors = [

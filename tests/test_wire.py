@@ -31,6 +31,14 @@ def test_request_parses_snake_case():
 def test_request_accepts_skill_id_alone():
     request = EvaluateRequest.model_validate_json(b'{"skill_id": "sk-1"}')
     assert request.skill_id == "sk-1"
+    assert request.candidate is None
+
+
+def test_request_preserves_an_explicitly_empty_candidate():
+    request = EvaluateRequest.model_validate_json(
+        b'{"skill_id": "sk-1", "candidate": {"skill_md": ""}}'
+    )
+    assert request.candidate is not None
     assert request.candidate.skill_md == ""
 
 

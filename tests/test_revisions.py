@@ -16,6 +16,7 @@ from skills_evaluator.store import (
     utcnow,
 )
 from skills_evaluator.tapes import SearchHit
+from skills_evaluator.wire import BundleFile
 
 
 @dataclass
@@ -87,10 +88,24 @@ class TestServiceRevise:
         assert record.status == "proposed"
         assert record.revised_skill_md.startswith("# Morning catchup (revised)")
         assert record.evaluation["decision"] == "pass"
+        assert request_fixture.candidate is not None
         assert record.original_skill_md == request_fixture.candidate.skill_md
         assert reviser.calls[0]["skill_name"] == "morning-catchup"
         assert "catch me up" in reviser.calls[0]["session_evidence"]
         assert revising_service.store.get(record.id) is not None
+
+    def test_reviser_receives_support_files_as_context(
+        self, revising_service, fake_tapes, reviser, request_fixture
+    ):
+        seed_evidence(fake_tapes)
+        assert request_fixture.candidate is not None
+        request_fixture.candidate.files = [
+            BundleFile(path="reference.md", content="required context")
+        ]
+
+        revising_service.revise(request_fixture)
+
+        assert "### Support file: reference.md" in reviser.calls[0]["support_files"]
 
     def test_revise_refuses_without_evidence(self, revising_service, request_fixture):
         with pytest.raises(NoEvidenceError):
@@ -174,6 +189,7 @@ class TestRevisionEndpoints:
         body = created.json()
         assert body["status"] == "proposed"
         assert body["skill_id"] == skill_id
+        assert body["original_skill_md"] == "# Morning catchup\n\nSteps."
         assert body["ref"]["id"] == "prop-1"
         revision_id = body["id"]
 

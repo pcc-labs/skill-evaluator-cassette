@@ -92,6 +92,7 @@ class EvalRecord:
     skill_id: str
     skill_name: str
     spec: dict[str, Any]
+    source_sha256: str = ""
     origin: str = ORIGIN_GENERATED
     created_at: str = ""
     updated_at: str = ""
@@ -316,21 +317,22 @@ class PostgresRevisionStore:
     def set_status(
         self, revision_id: str, status: str, reason: str
     ) -> RevisionRecord | None:
+        decided_at = utcnow()
+        with self._connect() as conn:
+            row = conn.execute(
+                f'UPDATE "{SCHEMA}".revisions '
+                "SET status = %s, status_reason = %s, decided_at = %s "
+                "WHERE id = %s AND status = %s "
+                f"RETURNING {self._COLUMNS}",
+                (status, reason, decided_at, revision_id, PROPOSED),
+            ).fetchone()
+        if row:
+            return _from_row(row)
+
         record = self.get(revision_id)
         if record is None:
             return None
         _check_transition(record, status)
-        if record.status == PROPOSED:
-            decided_at = utcnow()
-            with self._connect() as conn:
-                conn.execute(
-                    f'UPDATE "{SCHEMA}".revisions '
-                    "SET status = %s, status_reason = %s, decided_at = %s "
-                    "WHERE id = %s",
-                    (status, reason, decided_at, revision_id),
-                )
-            record.status, record.status_reason = status, reason
-            record.decided_at = decided_at
         return record
 
     def list_for_skill(self, skill_id: str, limit: int) -> list[RevisionRecord]:
@@ -342,32 +344,46 @@ class PostgresRevisionStore:
             ).fetchall()
         return [_from_row(row) for row in rows]
 
-    _EVAL_COLUMNS = "id, skill_id, skill_name, spec, origin, created_at, updated_at"
+    _EVAL_COLUMNS = (
+        "id, skill_id, skill_name, spec, source_sha256, origin, created_at, updated_at"
+    )
 
     def upsert_eval(self, record: EvalRecord, force: bool) -> EvalRecord:
-        existing = self.get_eval_for_skill(record.skill_id)
-        kept = _apply_eval_upsert(existing, record, force)
-        if kept is None:
-            return existing  # type: ignore[return-value]
         with self._connect() as conn:
-            conn.execute(
+            row = conn.execute(
                 f'INSERT INTO "{SCHEMA}".evals ({self._EVAL_COLUMNS}) '
-                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (skill_id) DO UPDATE SET "
-                "spec = EXCLUDED.spec, origin = EXCLUDED.origin, "
-                "skill_name = EXCLUDED.skill_name, "
-                "updated_at = EXCLUDED.updated_at",
+                "spec = EXCLUDED.spec, source_sha256 = EXCLUDED.source_sha256, "
+                "origin = EXCLUDED.origin, skill_name = EXCLUDED.skill_name, "
+                "updated_at = EXCLUDED.updated_at "
+                f'WHERE %s AND "{SCHEMA}".evals.origin = %s '
+                f"RETURNING {self._EVAL_COLUMNS}",
                 (
-                    kept.id,
-                    kept.skill_id,
-                    kept.skill_name,
-                    json.dumps(kept.spec),
-                    kept.origin,
-                    kept.created_at,
-                    kept.updated_at,
+                    record.id,
+                    record.skill_id,
+                    record.skill_name,
+                    json.dumps(record.spec),
+                    record.source_sha256,
+                    record.origin,
+                    record.created_at,
+                    record.updated_at,
+                    force,
+                    ORIGIN_GENERATED,
                 ),
+            ).fetchone()
+        if row:
+            return _eval_from_row(row)
+
+        existing = self.get_eval_for_skill(record.skill_id)
+        if existing is None:
+            raise RuntimeError(f"eval upsert lost row for skill {record.skill_id!r}")
+        if force and existing.origin == ORIGIN_EDITED:
+            raise EditedSpecError(
+                f"eval {existing.id} for skill {existing.skill_id!r} was human-edited; "
+                "update it with PUT, not regeneration"
             )
-        return kept
+        return existing
 
     def get_eval(self, eval_id: str) -> EvalRecord | None:
         with self._connect() as conn:
@@ -427,9 +443,10 @@ def _eval_from_row(row: tuple) -> EvalRecord:
         skill_id=row[1],
         skill_name=row[2],
         spec=row[3],
-        origin=row[4],
-        created_at=row[5].isoformat() if hasattr(row[5], "isoformat") else str(row[5]),
-        updated_at=row[6].isoformat() if hasattr(row[6], "isoformat") else str(row[6]),
+        source_sha256=row[4],
+        origin=row[5],
+        created_at=row[6].isoformat() if hasattr(row[6], "isoformat") else str(row[6]),
+        updated_at=row[7].isoformat() if hasattr(row[7], "isoformat") else str(row[7]),
     )
 
 

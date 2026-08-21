@@ -29,12 +29,12 @@ kind = "cassette/v1alpha1"
 # and the role ("cassette_skills-evaluator").
 [cassette]
 name = "skills-evaluator"
-version = "0.1.0"
+version = "0.0.1"
 display_name = "Skills Evaluator"
 description = "Evaluates skill documents against captured tapes sessions with a DSPy pipeline."
 license = "Apache-2.0"
 homepage = "https://github.com/papercomputeco/skills-evaluator-cassette"
-image = "tapes/skills-evaluator-cassette:0.1.0"
+image = "952121199601.dkr.ecr.us-east-1.amazonaws.com/skills-evaluator-cassette:v0.0.1"
 port = 9978
 
 # What this cassette needs from tapes.
@@ -84,10 +84,10 @@ name = "evals"
 # become underscores: llm.api_key -> CASSETTE_LLM_API_KEY).
 
 [[config]]
-key = "tapes_base_url"
+key = "core.url"
 type = "string"
-default = "http://127.0.0.1:8081"
-description = "Base URL of the tapes core API used for skill resolution, span search, and trace reads."
+required = true
+description = "Tapes core API origin used for skill resolution, span search, and trace reads."
 
 [[config]]
 key = "search_top_k"

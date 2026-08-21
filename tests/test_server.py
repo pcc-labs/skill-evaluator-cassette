@@ -16,6 +16,7 @@ def test_manifest_is_valid_cassette_metadata():
     manifest = load_manifest()
     assert manifest["kind"] == "cassette/v1alpha1"
     assert manifest["cassette"]["name"] == "skills-evaluator"
+    assert manifest["cassette"]["version"] == "0.0.1"
     assert manifest["api"] == {
         "health": "/ping",
         "openapi": "/openapi",
@@ -35,6 +36,7 @@ def test_ping(client):
 
 def test_openapi_embeds_manifest_and_declares_prefixed_path(client):
     document = client.get("/openapi").json()
+    assert document["openapi"] == "3.1.0"
     assert document["x-tapes-cassette"] == load_manifest()
     assert "/api/skills-evaluator/evaluate" in document["paths"]
     assert "EvaluateRequest" in document["components"]["schemas"]
@@ -75,13 +77,22 @@ def test_evaluate_returns_judgment(client, fake_tapes):
     assert body["metrics"]["sessions_considered"] == 0
 
 
-def test_unconfigured_llm_reports_503():
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("post", "/api/skills-evaluator/evaluate", {"skill_id": "sk-1"}),
+        ("post", "/api/skills-evaluator/revisions", {"skill_id": "sk-1"}),
+        ("get", "/api/skills-evaluator/revisions?skill_id=sk-1", None),
+        ("post", "/api/skills-evaluator/evals", {"skill_id": "sk-1"}),
+        ("get", "/api/skills-evaluator/evals?skill_id=sk-1", None),
+    ],
+)
+def test_unconfigured_llm_keeps_the_poc_surface_unavailable(method, path, body):
     client = TestClient(create_app(None, "no API key for provider 'anthropic'"))
-    response = client.post(
-        "/api/skills-evaluator/evaluate", json={"skill_id": "sk-1"}
-    )
+    response = client.request(method, path, json=body)
     assert response.status_code == 503
-    assert "no API key" in response.json()["detail"]
+    if path.endswith("/evaluate"):
+        assert "no API key" in response.json()["detail"]
 
 
 def test_service_failure_is_502(client, fake_tapes):

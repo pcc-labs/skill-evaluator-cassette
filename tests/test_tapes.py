@@ -37,9 +37,12 @@ def test_search_spans_maps_hits_and_503():
     assert hits[0].session_id == "s1"
     assert hits[0].score == pytest.approx(0.8)
 
-    unavailable = make_client(lambda _: httpx.Response(503, text="no embedder"))
-    with pytest.raises(SearchUnavailableError):
-        unavailable.search_spans("q", 5)
+    for status in (404, 503):
+        unavailable = make_client(
+            lambda _, status=status: httpx.Response(status, text="search unavailable")
+        )
+        with pytest.raises(SearchUnavailableError):
+            unavailable.search_spans("q", 5)
 
 
 def test_get_skill_uses_skills_cassette():

@@ -26,5 +26,7 @@ def test_manifest_identity_is_consistent():
     # The identity everything derives from: route, schema, role, and the
     # port the Dockerfile exposes all follow the name and port here.
     assert MANIFEST["cassette"]["name"] == "skills-evaluator"
+    assert MANIFEST["cassette"]["version"] == "0.0.1"
+    assert MANIFEST["cassette"]["image"].endswith(":v0.0.1")
     assert MANIFEST["cassette"]["port"] == 9978
     assert MANIFEST["api"]["prefix_path"] == "api"
