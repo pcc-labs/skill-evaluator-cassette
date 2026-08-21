@@ -19,8 +19,8 @@ REQUEST_TIMEOUT_SECONDS = 30.0
 
 
 class SearchUnavailableError(Exception):
-    """Tapes answered 503: span search is not configured on this deployment.
-    The evaluator degrades to a no-evidence judgment instead of failing."""
+    """Span search is absent or unconfigured on this deployment.
+    The evaluator degrades to provenance/spec evidence instead of failing."""
 
 
 class SkillNotFoundError(Exception):
@@ -87,7 +87,7 @@ class TapesClient:
             f"{self.base_url}/v1/cassettes/search/spans",
             params={"query": query, "top_k": str(top_k)},
         )
-        if response.status_code == 503:
+        if response.status_code in (404, 503):
             raise SearchUnavailableError(response.text)
         response.raise_for_status()
         results = response.json().get("results") or []

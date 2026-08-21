@@ -46,7 +46,7 @@ services:
   skills-evaluator:
     build: .
     environment:
-      CASSETTE_TAPES_BASE_URL: http://tapes:8081
+      CASSETTE_CORE_URL: http://tapes:8081
       CASSETTE_LLM_PROVIDER: openai
       OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
       TAPES_DATABASE_URL: postgres://tapes:tapes@postgres:5432/tapes?sslmode=disable

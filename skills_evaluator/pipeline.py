@@ -134,7 +134,10 @@ class SkillRevisionProposal(dspy.Signature):
     to a finding, a criterion, or specific evidence."""
 
     skill_name: str = dspy.InputField()
-    skill_markdown: str = dspy.InputField(desc="the current skill document")
+    skill_markdown: str = dspy.InputField(desc="the current SKILL.md document")
+    support_files: str = dspy.InputField(
+        desc="read-only support-file context; '(none)' when the bundle has none"
+    )
     findings: str = dspy.InputField(desc="the evaluation's findings, one per line")
     session_evidence: str = dspy.InputField(
         desc="session transcripts with triage annotations; '(none)' when absent"
@@ -226,6 +229,7 @@ class SkillReviser(dspy.Module):
         self,
         skill_name: str,
         skill_markdown: str,
+        support_files: str,
         findings: list[JudgeFinding],
         session_evidence: str,
         eval_spec: str = "",
@@ -236,6 +240,7 @@ class SkillReviser(dspy.Module):
         proposal = self.revise(
             skill_name=skill_name,
             skill_markdown=skill_markdown[:MAX_CANDIDATE_PROMPT_CHARS],
+            support_files=support_files[:MAX_CANDIDATE_PROMPT_CHARS] or "(none)",
             findings=rendered,
             session_evidence=session_evidence or "(none)",
             eval_spec=eval_spec or "(none)",

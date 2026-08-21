@@ -7,6 +7,8 @@ the one the tests exercise with fakes."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -15,6 +17,8 @@ import httpx
 
 from .pipeline import MAX_TRANSCRIPT_CHARS, RULESET_VERSION, JudgeFinding
 from .store import (
+    ORIGIN_GENERATED,
+    EditedSpecError,
     EvalRecord,
     RevisionRecord,
     RevisionStore,
@@ -25,6 +29,7 @@ from .tapes import SearchHit, SearchUnavailableError, SkillRecord, TapesClient
 from .wire import (
     MAX_REASON_CHARS,
     MAX_SUMMARY_CHARS,
+    Bundle,
     EvaluateRequest,
     EvaluateResponse,
     Finding,
@@ -39,7 +44,7 @@ logger = logging.getLogger(__name__)
 MAX_QUERIES = 3
 MAX_QUERY_CHARS = 200
 
-VERSION = "0.4.0"
+VERSION = "0.0.1"
 
 
 class NoEvidenceError(Exception):
@@ -80,7 +85,7 @@ class _Grounds:
     """What one evaluation stood on."""
 
     skill: SkillRecord
-    markdown: str
+    bundle: Bundle
     transcripts: list[tuple[str, str]]
     spec_text: str
     eval_record: EvalRecord | None
@@ -112,19 +117,24 @@ class EvaluationService:
     def _evaluate_full(
         self, request: EvaluateRequest
     ) -> tuple[EvaluateResponse, _Grounds]:
-        skill, markdown = self._resolve_subject(request)
+        skill, bundle = self._resolve_subject(request)
         provenance_ids = skill.originating_session_ids
 
-        hits, gated_out, search_note = self._gather_hits(skill, markdown)
+        hits, gated_out, search_note = self._gather_hits(skill, bundle.skill_md)
         session_ids = merge_evidence_sessions(
             provenance_ids, hits, self.config.max_sessions
         )
         transcripts = self._build_transcripts(session_ids)
         loaded_ids = {sid for sid, _ in transcripts}
 
-        eval_record = self._resolve_spec(skill, markdown, transcripts)
+        eval_record = self._resolve_spec(
+            skill,
+            bundle,
+            transcripts,
+            refresh_generated=request.candidate is None,
+        )
         spec_text = render_spec(eval_record.spec) if eval_record else ""
-        grounds = _Grounds(skill, markdown, transcripts, spec_text, eval_record)
+        grounds = _Grounds(skill, bundle, transcripts, spec_text, eval_record)
 
         metrics = Metrics(
             sessions_considered=len(transcripts),
@@ -149,8 +159,8 @@ class EvaluationService:
 
         prediction = self.module(
             skill_name=skill.name,
-            skill_markdown=markdown,
-            baseline_markdown=request.baseline.skill_md if request.baseline else "",
+            skill_markdown=render_bundle(bundle),
+            baseline_markdown=render_bundle(request.baseline) if request.baseline else "",
             transcripts=transcripts,
             eval_spec=spec_text,
         )
@@ -204,7 +214,8 @@ class EvaluationService:
         evidence = "\n---\n".join(text for _, text in grounds.transcripts)
         proposal = self.reviser(
             skill_name=grounds.skill.name,
-            skill_markdown=grounds.markdown,
+            skill_markdown=grounds.bundle.skill_md,
+            support_files=render_support_files(grounds.bundle),
             findings=[
                 JudgeFinding(
                     rule_id=f.rule_id,
@@ -232,7 +243,7 @@ class EvaluationService:
             skill_id=grounds.skill.id,
             ref=request.ref.model_dump() if request.ref else None,
             skill_name=grounds.skill.name,
-            original_skill_md=grounds.markdown,
+            original_skill_md=grounds.bundle.skill_md,
             revised_skill_md=revised,
             rationale=str(proposal.rationale or "").strip()[: MAX_REASON_CHARS * 2],
             evaluation=response.model_dump(),
@@ -250,17 +261,17 @@ class EvaluationService:
         when one exists and force is off."""
         if self.spec_generator is None or self.store is None:
             raise RuntimeError("eval spec pipeline is not configured")
-        skill, markdown = self._resolve_subject(request)
-        return self._generate_eval(skill, markdown, force)
+        skill, bundle = self._resolve_subject(request)
+        return self._generate_eval(skill, bundle, force)
 
     def _generate_eval(
-        self, skill: SkillRecord, markdown: str, force: bool
+        self, skill: SkillRecord, bundle: Bundle, force: bool
     ) -> EvalRecord:
         existing = self.store.get_eval_for_skill(skill.id)
         if existing is not None and not force:
             return existing
 
-        hits, _, _ = self._gather_hits(skill, markdown)
+        hits, _, _ = self._gather_hits(skill, bundle.skill_md)
         session_ids = merge_evidence_sessions(
             skill.originating_session_ids, hits, self.config.max_sessions
         )
@@ -270,7 +281,7 @@ class EvaluationService:
         proposal = self.spec_generator(
             skill_name=skill.name,
             skill_description=skill.description,
-            skill_markdown=markdown,
+            skill_markdown=render_bundle(bundle),
             session_evidence=evidence,
         )
         spec = {
@@ -283,6 +294,7 @@ class EvaluationService:
             skill_id=skill.id,
             skill_name=skill.name,
             spec=spec,
+            source_sha256=bundle_sha(bundle),
             created_at=now,
             updated_at=now,
         )
@@ -291,8 +303,9 @@ class EvaluationService:
     def _resolve_spec(
         self,
         skill: SkillRecord,
-        markdown: str,
+        bundle: Bundle,
         transcripts: list[tuple[str, str]],
+        refresh_generated: bool,
     ) -> EvalRecord | None:
         """Finds the skill's stored spec; when there is none AND no session
         evidence, optionally drafts one inline so a day-zero skill still
@@ -302,13 +315,26 @@ class EvaluationService:
             return None
         record = self.store.get_eval_for_skill(skill.id)
         if record is not None:
-            return record
+            stale = (
+                refresh_generated
+                and record.origin == ORIGIN_GENERATED
+                and record.source_sha256 != bundle_sha(bundle)
+            )
+            if not stale:
+                return record
+            try:
+                return self._generate_eval(skill, bundle, force=True)
+            except EditedSpecError:
+                return self.store.get_eval_for_skill(skill.id)
+            except Exception:  # noqa: BLE001 - keep the last usable metric
+                logger.exception("stale spec refresh failed for %s", skill.id)
+                return record
         if transcripts or not self.config.spec_autogenerate:
             return None
         if self.spec_generator is None:
             return None
         try:
-            return self._generate_eval(skill, markdown, force=False)
+            return self._generate_eval(skill, bundle, force=False)
         except Exception:  # noqa: BLE001 - degrade, never fail the evaluation
             logger.exception("inline spec generation failed for %s", skill.id)
             return None
@@ -316,19 +342,15 @@ class EvaluationService:
     # ------------------------------------------------------------------
     # Evidence plumbing
 
-    def _resolve_subject(self, request: EvaluateRequest) -> tuple[SkillRecord, str]:
+    def _resolve_subject(self, request: EvaluateRequest) -> tuple[SkillRecord, Bundle]:
         """Resolves the skill row every request is anchored on and picks the
         document under judgment: the inline candidate when one was sent (a
         proposal replacing the stored content), otherwise the stored content
         itself. The row's provenance sessions — the sessions the skill was
         generated from — outrank anything search can find."""
         skill = self.tapes.get_skill(request.skill_id.strip())
-        markdown = (
-            request.candidate.skill_md
-            if request.candidate.skill_md.strip()
-            else skill.content
-        )
-        return skill, markdown
+        bundle = request.candidate or Bundle(skill_md=skill.content)
+        return skill, bundle
 
     def _gather_hits(
         self, skill: SkillRecord, markdown: str
@@ -409,6 +431,33 @@ def _strip_fences(text: str) -> str:
             lines = lines[:-1]
         stripped = "\n".join(lines).strip()
     return stripped
+
+
+def render_support_files(bundle: Bundle) -> str:
+    """Render support files as clearly delimited, read-only model context."""
+    return "\n\n".join(
+        f"### Support file: {file.path}\n{file.content}"
+        for file in sorted(bundle.files, key=lambda item: item.path)
+    )
+
+
+def render_bundle(bundle: Bundle) -> str:
+    support = render_support_files(bundle)
+    if not support:
+        return bundle.skill_md
+    return f"{bundle.skill_md}\n\n---\n\n{support}"
+
+
+def bundle_sha(bundle: Bundle) -> str:
+    payload = {
+        "skill_md": bundle.skill_md,
+        "files": [
+            {"path": file.path, "content": file.content}
+            for file in sorted(bundle.files, key=lambda item: item.path)
+        ],
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def render_spec(spec: dict) -> str:

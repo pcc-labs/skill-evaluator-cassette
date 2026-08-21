@@ -3,7 +3,7 @@
 Four things make this process a tapes cassette:
 
 1. ``GET /ping`` answers 200 — the ``api.health`` anchor core probes.
-2. ``GET /openapi`` serves an OpenAPI 3.0 document — core fetches,
+2. ``GET /openapi`` serves an OpenAPI 3.1 document — core fetches,
    admits (on the embedded ``x-tapes-cassette`` manifest), and aggregates it.
 3. The API lives under ``/api/skills-evaluator`` — the declared
    ``prefix_path`` core strips and republishes as
@@ -66,7 +66,7 @@ MANIFEST: dict[str, Any] = {
     "kind": "cassette/v1alpha1",
     "cassette": {
         "name": "skills-evaluator",
-        "version": "0.1.0",
+        "version": "0.0.1",
         "display_name": "Skills Evaluator",
         "description": (
             "Evaluates skill documents against captured tapes sessions "
@@ -74,7 +74,7 @@ MANIFEST: dict[str, Any] = {
         ),
         "license": "Apache-2.0",
         "homepage": "https://github.com/papercomputeco/skills-evaluator-cassette",
-        "image": "tapes/skills-evaluator-cassette:0.1.0",
+        "image": "952121199601.dkr.ecr.us-east-1.amazonaws.com/skills-evaluator-cassette:v0.0.1",
         "port": 9978,
     },
     "depends": {"core": "v1", "views": []},
@@ -82,12 +82,12 @@ MANIFEST: dict[str, Any] = {
     "tables": [{"name": "revisions"}, {"name": "evals"}],
     "config": [
         {
-            "key": "tapes_base_url",
+            "key": "core.url",
             "type": "string",
-            "default": "http://127.0.0.1:8081",
+            "required": True,
             "description": (
-                "Base URL of the tapes core API used for skill resolution, "
-                "span search, and trace reads."
+                "Tapes core API origin used for skill resolution, span search, "
+                "and trace reads."
             ),
         },
         {
@@ -383,6 +383,7 @@ def _eval_response(record: EvalRecord) -> EvalResponse:
         origin=record.origin,
         spec=EvalSpec.model_validate(record.spec),
         spec_sha256=record.spec_sha256,
+        source_sha256=record.source_sha256,
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
@@ -396,6 +397,7 @@ def _revision_response(record: RevisionRecord) -> RevisionResponse:
         skill_name=record.skill_name,
         status=record.status,
         status_reason=record.status_reason,
+        original_skill_md=record.original_skill_md,
         revised_skill_md=record.revised_skill_md,
         rationale=record.rationale,
         evaluation=EvaluateResponse.model_validate(record.evaluation),
@@ -405,7 +407,7 @@ def _revision_response(record: RevisionRecord) -> RevisionResponse:
 
 
 def _openapi_document(manifest: dict[str, Any], prefix: str) -> dict[str, Any]:
-    """Renders the OpenAPI 3.0 document core fetches: every path under the
+    """Renders the OpenAPI 3.1 document core fetches: every path under the
     admitted prefix, schemas reflected from the wire models, and the
     manifest riding as the ``x-tapes-cassette`` root extension."""
     schemas: dict[str, Any] = {}
@@ -427,7 +429,7 @@ def _openapi_document(manifest: dict[str, Any], prefix: str) -> dict[str, Any]:
     eval_update_ref = schema_ref(EvalUpdateRequest)
 
     return {
-        "openapi": "3.0.3",
+        "openapi": "3.1.0",
         "info": {
             "title": "Skills Evaluator Cassette",
             "description": manifest["cassette"]["description"],
@@ -538,10 +540,10 @@ def _openapi_document(manifest: dict[str, Any], prefix: str) -> dict[str, Any]:
                     "summary": "Evaluate a skill and propose an evidence-grounded revision",
                     "description": (
                         "Runs the evaluation pipeline, then rewrites the skill so "
-                        "the findings are addressed, grounded only in the session "
-                        "evidence. The revision is stored as `proposed` with the "
-                        "evaluation that motivated it; 409 when no session evidence "
-                        "exists to ground a rewrite."
+                        "the findings are addressed, grounded in session evidence "
+                        "and/or the skill's eval spec. The revision is stored as "
+                        "`proposed` with the evaluation that motivated it; 409 when "
+                        "neither source exists to ground a rewrite."
                     ),
                     "tags": [manifest["cassette"]["name"]],
                     "requestBody": {

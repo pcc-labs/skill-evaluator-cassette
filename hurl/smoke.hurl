@@ -12,8 +12,10 @@ jsonpath "$.cassette" == "skills-evaluator"
 GET {{root_url}}/openapi
 HTTP 200
 [Asserts]
+jsonpath "$.openapi" == "3.1.0"
 jsonpath "$['x-tapes-cassette'].kind" == "cassette/v1alpha1"
 jsonpath "$['x-tapes-cassette'].cassette.name" == "skills-evaluator"
+jsonpath "$['x-tapes-cassette'].cassette.version" == "0.0.1"
 jsonpath "$['x-tapes-cassette'].tables" count == 2
 jsonpath "$.paths['/api/skills-evaluator/evaluate']" exists
 jsonpath "$.paths['/api/skills-evaluator/revisions']" exists

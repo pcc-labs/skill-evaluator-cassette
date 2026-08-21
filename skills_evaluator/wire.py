@@ -69,7 +69,7 @@ class EvaluateRequest(BaseModel):
 
     ref: Ref | None = None
     skill_id: str
-    candidate: Bundle = Field(default_factory=Bundle)
+    candidate: Bundle | None = None
     baseline: Bundle | None = None
 
 
@@ -152,6 +152,7 @@ class EvalResponse(BaseModel):
     origin: str = "generated"  # generated | edited
     spec: EvalSpec = Field(default_factory=EvalSpec)
     spec_sha256: str = ""
+    source_sha256: str = ""
     created_at: str = ""
     updated_at: str = ""
 
@@ -181,6 +182,7 @@ class RevisionResponse(BaseModel):
     skill_name: str = ""
     status: str = "proposed"
     status_reason: str = ""
+    original_skill_md: str = ""
     revised_skill_md: str = ""
     rationale: str = ""
     evaluation: EvaluateResponse = Field(default_factory=EvaluateResponse)

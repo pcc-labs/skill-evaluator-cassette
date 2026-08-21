@@ -1,6 +1,6 @@
 # The skills-evaluator cassette image.
 #
-#   docker build -t tapes/skills-evaluator-cassette:dev .
+#   docker build -t skills-evaluator-cassette:dev .
 #
 # Two stages: uv resolves and installs the locked environment, then the
 # runtime stage carries only the venv and the package source (the project is

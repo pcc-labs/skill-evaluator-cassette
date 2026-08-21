@@ -10,7 +10,7 @@ from skills_evaluator.tapes import (
     SkillNotFoundError,
     SkillRecord,
 )
-from skills_evaluator.wire import Bundle, EvaluateRequest
+from skills_evaluator.wire import Bundle, BundleFile, EvaluateRequest
 
 
 def hit(session_id: str, score: float) -> SearchHit:
@@ -67,9 +67,14 @@ class TestWithEvidence:
         assert response.metrics.judge_model == "fake/judge"
 
     def test_baseline_forwarded_for_updates(self, service, fake_module, request_fixture):
-        request_fixture.baseline = Bundle(skill_md="# Old skill")
+        request_fixture.baseline = Bundle(
+            skill_md="# Old skill",
+            files=[BundleFile(path="reference.md", content="old context")],
+        )
         service.evaluate(request_fixture)
-        assert fake_module.calls[0]["baseline_markdown"] == "# Old skill"
+        baseline = fake_module.calls[0]["baseline_markdown"]
+        assert baseline.startswith("# Old skill")
+        assert "### Support file: reference.md\nold context" in baseline
 
     def test_score_clamped(self, service, fake_module, request_fixture):
         fake_module.prediction.score = 3.7
@@ -122,12 +127,22 @@ class TestSkillResolution:
         ]
         assert response.metrics.provenance_sessions == 2
 
-    def test_inline_content_wins_over_stored(self, service, fake_module):
+    def test_inline_bundle_wins_over_stored(self, service, fake_module):
         request = EvaluateRequest(
-            skill_id="sk-1", candidate=Bundle(skill_md="# Edited draft")
+            skill_id="sk-1",
+            candidate=Bundle(
+                skill_md="# Edited draft",
+                files=[BundleFile(path="scripts/check.py", content="assert safe")],
+            ),
         )
         service.evaluate(request)
-        assert fake_module.calls[0]["skill_markdown"] == "# Edited draft"
+        rendered = fake_module.calls[0]["skill_markdown"]
+        assert rendered.startswith("# Edited draft")
+        assert "### Support file: scripts/check.py\nassert safe" in rendered
+
+    def test_explicit_empty_candidate_does_not_fall_back(self, service, fake_module):
+        service.evaluate(EvaluateRequest(skill_id="sk-1", candidate=Bundle()))
+        assert fake_module.calls[0]["skill_markdown"] == ""
 
     def test_unknown_skill_raises(self, service):
         with pytest.raises(SkillNotFoundError):
